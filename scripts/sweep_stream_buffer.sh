@@ -30,7 +30,7 @@ Environment variables:
   LIBQUANTUM_BIN           libquantum executable path.
   HMMER_BIN                hmmer executable path.
   LIBQUANTUM_ARGS          Extra libquantum arguments (default: "400 25").
-  HMMER_ARGS               Extra hmmer arguments (default: empty).
+  HMMER_ARGS               Extra hmmer arguments (default: "$BENCHMARK_ROOT/inputs/nph3.hmm").
   MAX_INSTRUCTIONS         Stop each benchmark after this many instructions per thread.
                            Set to 0 to disable the cutoff (default: 0).
 
@@ -583,7 +583,7 @@ fi
 if [ -n "${HMMER_ARGS:-}" ]; then
     HMMER_ARGS_ARR=(${HMMER_ARGS})
 else
-    HMMER_ARGS_ARR=()
+    HMMER_ARGS_ARR=("$BENCHMARK_ROOT/inputs/nph3.hmm")
 fi
 
 PARAM_NAMES=(

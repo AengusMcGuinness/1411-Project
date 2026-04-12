@@ -107,6 +107,9 @@ If your benchmark binaries live elsewhere, override them with:
 - `LIBQUANTUM_BIN=/path/to/libquantum_O3`
 - `HMMER_BIN=/path/to/hmmer_O3`
 
+The sweep script defaults `hmmer` to `benchmarks/inputs/nph3.hmm`. Override it
+with `HMMER_ARGS=/path/to/your_model.hmm` if you want to use a different input.
+
 The sweep script accepts any combination of the parameter lists documented in
 its `--help` output. Set a list to a single value to keep that knob fixed.
 
