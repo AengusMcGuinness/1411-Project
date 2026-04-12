@@ -6,8 +6,8 @@
 #include "../src/stream_buffer.cpp"
 
 // The final report uses iostreams and formatting helpers.
+#include <cstdlib>   // std::exit for the smoke-test cutoff path.
 #include <iomanip>   // std::fixed and std::setprecision for percentages.
-#include <atomic>    // std::atomic for one-shot shutdown coordination.
 #include <iostream>  // std::cout and std::cerr for status output.
 #include <memory>    // std::unique_ptr for per-thread benchmark ownership.
 #include <sstream>   // std::ostringstream for the final summary block.
@@ -76,8 +76,6 @@ StreamBufferStats g_baseline_total;
 StreamBufferConfig g_selected_config;
 // The optional instruction cutoff. A value of 0 disables the cutoff.
 UINT64 g_max_instructions = 0;
-// Ensure only one thread asks Pin to terminate the application.
-std::atomic<bool> g_exit_requested{false};
 
 // Read all knob values and build the configuration that the simulator expects.
 StreamBufferConfig BuildConfigFromKnobs() {
@@ -122,7 +120,7 @@ VOID PIN_FAST_ANALYSIS_CALL OnWrite(THREADID tid, ADDRINT addr) {
 }
 
 // Count executed instructions so smoke tests can stop after a fixed budget.
-VOID PIN_FAST_ANALYSIS_CALL OnInstruction(THREADID tid) {
+VOID OnInstruction(THREADID tid) {
     if (g_max_instructions == 0) {
         return;
     }
@@ -134,10 +132,8 @@ VOID PIN_FAST_ANALYSIS_CALL OnInstruction(THREADID tid) {
 
     state->instructions_seen += 1;
     if (state->instructions_seen >= g_max_instructions) {
-        // Terminate the benchmark early and still let Pin run fini callbacks.
-        if (!g_exit_requested.exchange(true)) {
-            PIN_ExitApplication(0);
-        }
+        // Terminate the benchmark early; Pin will still invoke fini callbacks.
+        std::exit(0);
     }
 }
 
@@ -146,7 +142,7 @@ VOID Instruction(INS ins, VOID *v) {
     if (g_max_instructions != 0) {
         INS_InsertCall(
             ins, IPOINT_BEFORE, AFUNPTR(OnInstruction),
-            IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_END);
+            IARG_THREAD_ID, IARG_END);
     }
 
     const UINT32 mem_ops = INS_MemoryOperandCount(ins);
