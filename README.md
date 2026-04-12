@@ -26,6 +26,13 @@ make pin PIN_ROOT=/path/to/pin
 ```
 
 On the cluster it should be `PIN_ROOT=$PIN_ROOT`
+
+If you want to force a clean rebuild of the Pintool, use:
+
+```bash
+make -C pintool clean PIN_ROOT="$PIN_ROOT"
+make -C pintool PIN_ROOT="$PIN_ROOT"
+```
 <!-- ## Trace Format -->
 
 <!-- The standalone simulator reads a simple text trace: -->
@@ -93,6 +100,17 @@ MAX_INSTRUCTIONS=1000000 \
 POLICY_VALUES="off nextline adaptive" \
 STREAM_SLOTS_VALUES="4 8 16" \
 MAX_PREFETCH_DEPTH_VALUES="1 2 4" \
+./scripts/sweep_stream_buffer.sh -o results.csv
+```
+
+For a quick smoke test on the cluster, use:
+
+```bash
+PIN_ROOT="$PIN_ROOT" \
+MAX_JOBS=4 \
+MAX_INSTRUCTIONS=1000000 \
+POLICY_VALUES="adaptive" \
+STREAM_SLOTS_VALUES="4 8" \
 ./scripts/sweep_stream_buffer.sh -o results.csv
 ```
 
