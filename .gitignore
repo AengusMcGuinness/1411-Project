@@ -1,0 +1,5 @@
+build/
+pintool/obj-*/
+*.o
+*.so
+
