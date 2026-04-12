@@ -6,18 +6,18 @@ prefetcher inspired by the paper in `Paper-A.pdf`.
 What is implemented:
 
 - A reusable C++ simulator for adaptive and next-line stream prefetching.
-- A standalone trace-driven CLI so the model can be benchmarked locally.
+<!-- - A standalone trace-driven CLI so the model can be benchmarked locally. -->
 - An Intel Pin Pintool front-end that reuses the same simulator core.
 - A bash sweep helper that runs the Pintool across `libquantum` and `hmmer`
   with configurable parameter grids and up to 4 concurrent jobs.
 
 ## Build
 
-Build the standalone simulator:
+<!-- Build the standalone simulator: -->
 
-```bash
-make
-```
+<!-- ```bash -->
+<!-- make -->
+<!-- ``` -->
 
 Build the Pintool once `PIN_ROOT` points at an Intel Pin installation:
 
