@@ -53,11 +53,14 @@ KNOB<UINT64> KnobMaxPrefetchDepth(KNOB_MODE_WRITEONCE, "pintool", "max_prefetch_
                                   "Maximum number of lines issued per stream access");
 KNOB<BOOL> KnobBootstrap(KNOB_MODE_WRITEONCE, "pintool", "bootstrap_next_line", "1",
                          "Use next-line bootstrap before the first learned histogram");
+KNOB<UINT64> KnobMaxInstructions(KNOB_MODE_WRITEONCE, "pintool", "max_instructions", "0",
+                                 "Stop after this many instructions per thread (0 disables)");
 
 // ThreadState bundles the per-thread benchmark harness so each thread can track
 // its own stream behavior independently.
 struct ThreadState {
     std::unique_ptr<StreamBufferBenchmark> benchmark;  // The owned benchmark instance for this thread.
+    UINT64 instructions_seen = 0;                      // Optional cutoff counter used for smoke tests.
 };
 
 // Pin needs a TLS key so analysis routines can recover the thread-local state.
@@ -70,6 +73,8 @@ StreamBufferStats g_selected_total;
 StreamBufferStats g_baseline_total;
 // The active configuration used by new threads.
 StreamBufferConfig g_selected_config;
+// The optional instruction cutoff. A value of 0 disables the cutoff.
+UINT64 g_max_instructions = 0;
 
 // Read all knob values and build the configuration that the simulator expects.
 StreamBufferConfig BuildConfigFromKnobs() {
@@ -113,8 +118,32 @@ VOID PIN_FAST_ANALYSIS_CALL OnWrite(THREADID tid, ADDRINT addr) {
     }
 }
 
+// Count executed instructions so smoke tests can stop after a fixed budget.
+VOID PIN_FAST_ANALYSIS_CALL OnInstruction(THREADID tid) {
+    if (g_max_instructions == 0) {
+        return;
+    }
+
+    ThreadState *state = GetThreadState(tid);
+    if (state == nullptr) {
+        return;
+    }
+
+    state->instructions_seen += 1;
+    if (state->instructions_seen >= g_max_instructions) {
+        // Terminate the benchmark early; the fini callbacks will still print stats.
+        PIN_ExitProcess(0);
+    }
+}
+
 // Instrument every instruction and insert callbacks for each memory operand.
 VOID Instruction(INS ins, VOID *v) {
+    if (g_max_instructions != 0) {
+        INS_InsertCall(
+            ins, IPOINT_BEFORE, AFUNPTR(OnInstruction),
+            IARG_FAST_ANALYSIS_CALL, IARG_THREAD_ID, IARG_END);
+    }
+
     const UINT32 mem_ops = INS_MemoryOperandCount(ins);
     for (UINT32 op = 0; op < mem_ops; ++op) {
         if (INS_MemoryOperandIsRead(ins, op)) {
@@ -178,6 +207,9 @@ VOID Fini(INT32 code, VOID *v) {
     out << "  stream slots: " << g_selected_config.stream_slots << '\n';
     out << "  max stream length: " << g_selected_config.max_stream_length << '\n';
     out << "  epoch reads: " << g_selected_config.epoch_reads << "\n\n";
+    if (g_max_instructions != 0) {
+        out << "  instruction limit per thread: " << g_max_instructions << "\n\n";
+    }
 
     out << "selected\n";
     out << "  refs: " << g_selected_total.total_refs << "  reads: " << g_selected_total.reads
@@ -220,6 +252,7 @@ int main(int argc, char *argv[]) {
 
     // Snapshot the chosen knob values before the first thread starts.
     g_selected_config = BuildConfigFromKnobs();
+    g_max_instructions = KnobMaxInstructions.Value();
     PIN_InitLock(&g_summary_lock);
     g_tls_key = PIN_CreateThreadDataKey(nullptr);
 

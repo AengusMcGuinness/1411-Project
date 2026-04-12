@@ -77,6 +77,10 @@ $PIN_ROOT/pin \
 The Pintool prints a selected-policy summary and a no-prefetch baseline so you
 can estimate the speedup from a single run.
 
+For faster smoke tests, set `MAX_INSTRUCTIONS` to a small value like
+`1000000`. That stops each benchmark thread after roughly that many
+instructions, which is much quicker than a full run under Pin.
+
 ## Sweep The Benchmarks
 
 The sweep helper runs the Pintool directly on the benchmark executables and
@@ -85,6 +89,7 @@ writes a CSV table of the modeled selected/baseline cycles and speedup.
 ```bash
 PIN_ROOT=/path/to/pin \
 MAX_JOBS=4 \
+MAX_INSTRUCTIONS=1000000 \
 POLICY_VALUES="off nextline adaptive" \
 STREAM_SLOTS_VALUES="4 8 16" \
 MAX_PREFETCH_DEPTH_VALUES="1 2 4" \

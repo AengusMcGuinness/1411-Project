@@ -31,6 +31,8 @@ Environment variables:
   HMMER_BIN                hmmer executable path.
   LIBQUANTUM_ARGS          Extra libquantum arguments (default: "400 25").
   HMMER_ARGS               Extra hmmer arguments (default: empty).
+  MAX_INSTRUCTIONS         Stop each benchmark after this many instructions per thread.
+                           Set to 0 to disable the cutoff (default: 0).
 
   BENCHMARK_VALUES         Benchmark names to sweep (default: "libquantum hmmer").
   POLICY_VALUES             Prefetch policies to sweep (default: "adaptive").
@@ -54,6 +56,7 @@ Example:
   POLICY_VALUES="off nextline adaptive" \
   STREAM_SLOTS_VALUES="4 8 16" \
   MAX_PREFETCH_DEPTH_VALUES="1 2 4" \
+  MAX_INSTRUCTIONS=1000000 \
   MAX_JOBS=4 \
   ./scripts/sweep_stream_buffer.sh -o results.csv
 
@@ -305,6 +308,7 @@ run_one() {
         -base_cost "$base_cost"
         -max_prefetch_depth "$max_prefetch_depth"
         -bootstrap_next_line "$bootstrap_knob"
+        -max_instructions "$MAX_INSTRUCTIONS"
         --
     )
     pin_cmd+=("${benchmark_cmd[@]}")
@@ -534,6 +538,7 @@ HMMER_BIN="${HMMER_BIN:-$BENCHMARK_ROOT/hmmer_O3}"
 [ -x "$HMMER_BIN" ] || die "hmmer benchmark not found or not executable: $HMMER_BIN"
 
 MAX_JOBS="${MAX_JOBS:-4}"
+MAX_INSTRUCTIONS="${MAX_INSTRUCTIONS:-0}"
 case "$MAX_JOBS" in
     ''|*[!0-9]*)
         die "MAX_JOBS must be a positive integer"
@@ -545,6 +550,12 @@ fi
 if [ "$MAX_JOBS" -gt 4 ]; then
     MAX_JOBS=4
 fi
+
+case "$MAX_INSTRUCTIONS" in
+    ''|*[!0-9]*)
+        die "MAX_INSTRUCTIONS must be a non-negative integer"
+        ;;
+esac
 
 BENCHMARK_VALUES_ARR=(${BENCHMARK_VALUES:-${BENCHMARKS:-libquantum hmmer}})
 POLICY_VALUES_ARR=(${POLICY_VALUES:-${POLICIES:-adaptive}})
