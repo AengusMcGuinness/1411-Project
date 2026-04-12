@@ -148,6 +148,82 @@ assign_current_value() {
     esac
 }
 
+count_values_for_key() {
+    case "$1" in
+        benchmark) printf '%s\n' "${#BENCHMARK_VALUES_ARR[@]}" ;;
+        policy) printf '%s\n' "${#POLICY_VALUES_ARR[@]}" ;;
+        line_size) printf '%s\n' "${#LINE_SIZE_VALUES_ARR[@]}" ;;
+        demand_cache_lines) printf '%s\n' "${#DEMAND_CACHE_LINES_VALUES_ARR[@]}" ;;
+        prefetch_buffer_lines) printf '%s\n' "${#PREFETCH_BUFFER_LINES_VALUES_ARR[@]}" ;;
+        stream_slots) printf '%s\n' "${#STREAM_SLOTS_VALUES_ARR[@]}" ;;
+        max_stream_length) printf '%s\n' "${#MAX_STREAM_LENGTH_VALUES_ARR[@]}" ;;
+        epoch_reads) printf '%s\n' "${#EPOCH_READS_VALUES_ARR[@]}" ;;
+        stream_lifetime) printf '%s\n' "${#STREAM_LIFETIME_VALUES_ARR[@]}" ;;
+        prefetch_latency) printf '%s\n' "${#PREFETCH_LATENCY_VALUES_ARR[@]}" ;;
+        miss_latency) printf '%s\n' "${#MISS_LATENCY_VALUES_ARR[@]}" ;;
+        hit_latency) printf '%s\n' "${#HIT_LATENCY_VALUES_ARR[@]}" ;;
+        write_latency) printf '%s\n' "${#WRITE_LATENCY_VALUES_ARR[@]}" ;;
+        base_cost) printf '%s\n' "${#BASE_COST_VALUES_ARR[@]}" ;;
+        max_prefetch_depth) printf '%s\n' "${#MAX_PREFETCH_DEPTH_VALUES_ARR[@]}" ;;
+        bootstrap_next_line) printf '%s\n' "${#BOOTSTRAP_VALUES_ARR[@]}" ;;
+        *) return 1 ;;
+    esac
+}
+
+format_job_label() {
+    printf 'benchmark=%s policy=%s stream_slots=%s max_stream_length=%s max_depth=%s bootstrap=%s' \
+        "$1" "$2" "$3" "$4" "$5" "$6"
+}
+
+log_progress() {
+    local action="$1"
+    local completed="$2"
+    local running="$3"
+    local label="$4"
+    printf 'progress: %s %d/%d (running=%d/%d) %s\n' \
+        "$action" "$completed" "$total_jobs" "$running" "$MAX_JOBS" "$label" >&2
+}
+
+reap_finished_jobs() {
+    local i pid status
+    local -a remaining_pids=()
+    local -a remaining_labels=()
+    local reaped_any=1
+
+    for i in "${!pids[@]}"; do
+        pid="${pids[$i]}"
+        status="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+        case "$status" in
+            *Z*)
+                wait "$pid" || true
+                completed_jobs=$((completed_jobs + 1))
+                active_jobs=$((active_jobs - 1))
+                log_progress "completed" "$completed_jobs" "$active_jobs" "${job_labels[$i]}"
+                reaped_any=0
+                ;;
+            *)
+                remaining_pids+=("$pid")
+                remaining_labels+=("${job_labels[$i]}")
+                ;;
+        esac
+    done
+
+    pids=("${remaining_pids[@]}")
+    job_labels=("${remaining_labels[@]}")
+    active_jobs="${#pids[@]}"
+
+    return "$reaped_any"
+}
+
+wait_for_slot() {
+    while [ "$active_jobs" -ge "$MAX_JOBS" ]; do
+        if reap_finished_jobs; then
+            continue
+        fi
+        sleep "${PROGRESS_POLL_INTERVAL:-0.25}"
+    done
+}
+
 run_one() {
     local row_file="$1"
     local benchmark="$2"
@@ -329,8 +405,18 @@ run_one() {
 }
 
 schedule_current_config() {
+    wait_for_slot
+
     local row_file="$WORKDIR/row_${job_index}.csv"
+    local job_label
     row_files+=("$row_file")
+    job_label="$(format_job_label \
+        "$CURRENT_BENCHMARK" \
+        "$CURRENT_POLICY" \
+        "$CURRENT_STREAM_SLOTS" \
+        "$CURRENT_MAX_STREAM_LENGTH" \
+        "$CURRENT_MAX_PREFETCH_DEPTH" \
+        "$CURRENT_BOOTSTRAP_NEXT_LINE")"
 
     run_one \
         "$row_file" \
@@ -352,14 +438,11 @@ schedule_current_config() {
         "$CURRENT_BOOTSTRAP_NEXT_LINE" &
 
     pids+=("$!")
+    job_labels+=("$job_label")
     active_jobs=$((active_jobs + 1))
+    scheduled_jobs=$((scheduled_jobs + 1))
+    log_progress "started" "$scheduled_jobs" "$active_jobs" "$job_label"
     job_index=$((job_index + 1))
-
-    if [ "$active_jobs" -ge "$MAX_JOBS" ]; then
-        wait "${pids[0]}" || true
-        pids=("${pids[@]:1}")
-        active_jobs=$((active_jobs - 1))
-    fi
 }
 
 walk_configs() {
@@ -450,6 +533,7 @@ HMMER_BIN="${HMMER_BIN:-$BENCHMARK_ROOT/hmmer_O3}"
 [ -x "$LIBQUANTUM_BIN" ] || die "libquantum benchmark not found or not executable: $LIBQUANTUM_BIN"
 [ -x "$HMMER_BIN" ] || die "hmmer benchmark not found or not executable: $HMMER_BIN"
 
+MAX_JOBS="${MAX_JOBS:-4}"
 case "$MAX_JOBS" in
     ''|*[!0-9]*)
         die "MAX_JOBS must be a positive integer"
@@ -510,13 +594,22 @@ PARAM_NAMES=(
     bootstrap_next_line
 )
 
+total_jobs=1
+for key in "${PARAM_NAMES[@]}"; do
+    count="$(count_values_for_key "$key")"
+    total_jobs=$((total_jobs * count))
+done
+
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/asb-sweep.XXXXXX")"
 trap 'rm -rf "$WORKDIR"' EXIT
 
 results_csv="$WORKDIR/results.csv"
 row_files=()
 pids=()
+job_labels=()
 active_jobs=0
+scheduled_jobs=0
+completed_jobs=0
 job_index=0
 
 CURRENT_BENCHMARK=""
@@ -536,14 +629,19 @@ CURRENT_BASE_COST=""
 CURRENT_MAX_PREFETCH_DEPTH=""
 CURRENT_BOOTSTRAP_NEXT_LINE=""
 
+printf 'sweeping %d configurations with up to %d concurrent jobs\n' "$total_jobs" "$MAX_JOBS" >&2
+
 printf '%s\n' \
     'benchmark,status,reason,policy,line_size,demand_cache_lines,prefetch_buffer_lines,stream_slots,max_stream_length,epoch_reads,stream_lifetime,prefetch_latency,miss_latency,hit_latency,write_latency,base_cost,max_prefetch_depth,bootstrap_next_line,selected_cycles,baseline_cycles,speedup' \
     >"$results_csv"
 
 walk_configs 0
 
-for pid in "${pids[@]}"; do
-    wait "$pid" || true
+while [ "$active_jobs" -gt 0 ]; do
+    if reap_finished_jobs; then
+        continue
+    fi
+    sleep "${PROGRESS_POLL_INTERVAL:-0.25}"
 done
 
 for row_file in "${row_files[@]}"; do
