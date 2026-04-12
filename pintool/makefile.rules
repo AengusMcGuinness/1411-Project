@@ -1,0 +1,20 @@
+#
+# Pin build settings for the adaptive stream buffer Pintool.
+#
+
+# Pin's default rules build one shared object per tool root.
+TEST_TOOL_ROOTS := adaptive_stream_buffer_pintool
+
+# The rest of the standard variables are kept empty because this repository
+# only needs the shared library build, not the Pin test harness.
+TEST_ROOTS :=
+TOOL_ROOTS :=
+SA_TOOL_ROOTS :=
+APP_ROOTS :=
+OBJECT_ROOTS :=
+DLL_ROOTS :=
+LIB_ROOTS :=
+
+# Preserve the conventional test groupings even though we are not using them.
+RUNNABLE_TESTS := $(TEST_TOOL_ROOTS) $(TEST_ROOTS)
+SANITY_SUBSET := $(TEST_TOOL_ROOTS) $(TEST_ROOTS)

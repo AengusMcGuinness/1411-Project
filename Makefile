@@ -29,7 +29,7 @@ $(SIM_BIN): $(SRC_DIR)/stream_buffer.cpp $(SRC_DIR)/stream_buffer_sim.cpp $(SRC_
 
 # Delegate Intel Pin tooling to the pintool subdirectory.
 pin:
-	$(MAKE) -C pintool
+	$(MAKE) -C pintool PIN_ROOT="$(PIN_ROOT)"
 
 # Remove only the local simulator build products.
 clean:
@@ -37,4 +37,4 @@ clean:
 
 # Delegate clean-up of the Pintool artifacts to the pintool subdirectory.
 pin-clean:
-	$(MAKE) -C pintool clean
+	$(MAKE) -C pintool clean PIN_ROOT="$(PIN_ROOT)"
