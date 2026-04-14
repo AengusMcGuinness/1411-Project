@@ -1,1 +1,0 @@
-benchmark,status,reason,policy,line_size,demand_cache_lines,prefetch_buffer_lines,stream_slots,max_stream_length,epoch_reads,stream_lifetime,prefetch_latency,miss_latency,hit_latency,write_latency,base_cost,max_prefetch_depth,bootstrap_next_line,selected_cycles,baseline_cycles,speedup
