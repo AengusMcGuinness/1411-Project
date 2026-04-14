@@ -1,0 +1,11 @@
+[aem515@general-dy-general-cr-19 hw4]$ head -n 20 libquantum_native.txt
+INFO: You are running LIKWID in a cpuset with 4 CPUs. Taking given IDs as logical ID in cpuset
+--------------------------------------------------------------------------------
+CPU name:       Intel(R) Xeon(R) Platinum 8275CL CPU @ 3.00GHz
+CPU type:       Intel Cascadelake SP processor
+CPU clock:      3.00 GHz
+--------------------------------------------------------------------------------
+# HWThreads: 17
+# GID|EventCount|CpuCount|Total runtime [s]|MEM_LOAD_RETIRED_L1_MISS|INSTR_RETIRED_ANY|CPU_CLK_UNHALTED_CORE|CPU_CLK_UNHALTED_REF
+1 4 1 6.4358173336212e-05 0.0 0.0 0.0 0.0
+1 4 1 0.12009562415475 4278884.0 945242383.0 347638688.0 289712880.0
