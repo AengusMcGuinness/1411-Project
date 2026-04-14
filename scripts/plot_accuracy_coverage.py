@@ -6,12 +6,12 @@ If those columns are missing, the script attempts to parse them from raw
 Pin output logs stored alongside the CSV (one .log per row file).
 """
 
-CSV_PATH = "stream_buffer_experiments.csv"
-OUTDIR = "plots"
-
 import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
+
+CSV_PATH = "stream_buffer_experiments.csv"
+OUTDIR = Path("plots")
 
 
 def plot_heatmap(df, benchmark, value_col, title, outdir):
@@ -58,8 +58,7 @@ def plot_line(df, benchmark, value_col, ylabel, outdir):
 
 
 def main():
-    outdir = Path(OUTDIR)
-    outdir.mkdir(exist_ok=True)
+    OUTDIR.mkdir(exist_ok=True)
 
     df = pd.read_csv(CSV_PATH)
     df = df[df["status"] == "ok"]
@@ -79,11 +78,11 @@ def main():
 
     for benchmark, group in adaptive_df.groupby("benchmark"):
         if has_accuracy:
-            plot_heatmap(group, benchmark, "accuracy", "Prefetch Accuracy Heatmap", outdir)
-            plot_line(group, benchmark, "accuracy", "Prefetch Accuracy", outdir)
+            plot_heatmap(group, benchmark, "accuracy", "Prefetch Accuracy Heatmap", OUTDIR)
+            plot_line(group, benchmark, "accuracy", "Prefetch Accuracy", OUTDIR)
         if has_coverage:
-            plot_heatmap(group, benchmark, "coverage", "Prefetch Coverage Heatmap", outdir)
-            plot_line(group, benchmark, "coverage", "Prefetch Coverage", outdir)
+            plot_heatmap(group, benchmark, "coverage", "Prefetch Coverage Heatmap", OUTDIR)
+            plot_line(group, benchmark, "coverage", "Prefetch Coverage", OUTDIR)
 
 
 if __name__ == "__main__":

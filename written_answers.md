@@ -2,7 +2,7 @@
 
 ## Overview
 
-This directory implements and evaluates the adaptive stream buffer prefetcher
+This project implements and evaluates the adaptive stream buffer prefetcher
 described in `Paper-A.pdf`. The core idea is to detect sequential memory access
 streams at runtime, maintain a stream table with direction and length metadata,
 and use a learned likelihood histogram to choose how aggressively to prefetch
@@ -10,12 +10,12 @@ ahead of the demand access pattern.
 
 ## Implementation
 
-- **Core simulator**: `stream_buffer.cpp` / `stream_buffer.hpp`
+- **Core simulator**: `src/stream_buffer.cpp` / `src/stream_buffer.hpp`
   - LRU demand cache model
   - FIFO prefetch buffer with ready-time tracking
   - Stream table with configurable slot count and lifetime
   - Epoch-based histogram learning for adaptive prefetch depth
-- **Pin tool**: `adaptive_stream_buffer_pintool.cpp`
+- **Pin tool**: `pintool/adaptive_stream_buffer_pintool.cpp`
   - Instruments memory reads and writes on real binaries
   - Runs selected policy side-by-side with a no-prefetch baseline
   - Reports accuracy, coverage, modeled cycles, and speedup
@@ -33,7 +33,7 @@ ahead of the demand access pattern.
 
 ### Running the Sweep
 ```bash
-make PIN_ROOT="$PIN_ROOT"
+make pin PIN_ROOT="$PIN_ROOT"
 
 PIN_ROOT="$PIN_ROOT" \
 MAX_JOBS=4 \
@@ -42,14 +42,14 @@ POLICY_VALUES="off nextline adaptive" \
 STREAM_SLOTS_VALUES="4 8 16" \
 MAX_PREFETCH_DEPTH_VALUES="1 2 4 8" \
 MAX_STREAM_LENGTH_VALUES="8 16 32" \
-./sweep_stream_buffer.sh -o stream_buffer_experiments.csv
+./scripts/sweep_stream_buffer.sh -o stream_buffer_experiments.csv
 ```
 
 ### Generating Plots
 ```bash
-python3 plot_speedup.py
-python3 plot_hardware_cost.py
-python3 plot_accuracy_coverage.py
+python3 scripts/plot_speedup.py
+python3 scripts/plot_hardware_cost.py
+python3 scripts/plot_accuracy_coverage.py
 ```
 
 ### Results
@@ -64,7 +64,7 @@ Explain why adaptive outperforms nextline on streaming workloads (libquantum)
 and how the epoch-based learning adapts to different access patterns.]
 
 ### Hardware Cost Tradeoff
-[TODO: Calculate bits per configuration using `plot_hardware_cost.py`.
+[TODO: Calculate bits per configuration using `scripts/plot_hardware_cost.py`.
 Show diminishing returns as stream table and prefetch buffer grow.
 Discuss the Pareto frontier of cost vs. speedup.]
 
@@ -76,7 +76,7 @@ Hardware cost formula:
 ### Prefetch Accuracy and Coverage
 [TODO: Discuss the accuracy-coverage tradeoff.
 Explain how epoch length and max prefetch depth affect learning stability.
-Reference heatmap plots from `plot_accuracy_coverage.py`.]
+Reference heatmap plots from `scripts/plot_accuracy_coverage.py`.]
 
 ## Machine Details
 ```
