@@ -6,7 +6,7 @@
 #include "../src/stream_buffer.cpp"
 
 // The final report uses iostreams and formatting helpers.
-#include <cstdlib>   // std::exit for the smoke-test cutoff path.
+#include <cstdlib>   // std::exit for the early-cutoff path.
 #include <iomanip>   // std::fixed and std::setprecision for percentages.
 #include <iostream>  // std::cout and std::cerr for status output.
 #include <memory>    // std::unique_ptr for per-thread benchmark ownership.
@@ -63,6 +63,9 @@ struct ThreadState {
     std::unique_ptr<StreamBufferBenchmark> benchmark;  // The owned benchmark instance for this thread.
     UINT64 instructions_seen = 0;                      // Optional cutoff counter used for smoke tests.
 };
+
+// Forward declaration so OnInstruction can call Fini directly on early exit.
+VOID Fini(INT32 code, VOID *v);
 
 // Pin needs a TLS key so analysis routines can recover the thread-local state.
 TLS_KEY g_tls_key;
@@ -132,7 +135,12 @@ VOID OnInstruction(THREADID tid) {
 
     state->instructions_seen += 1;
     if (state->instructions_seen >= g_max_instructions) {
-        // Terminate the benchmark early; Pin will still invoke fini callbacks.
+        // PIN_ExitApplication hangs in Pin 3.x; std::exit skips Fini callbacks in this
+        // version. So flush this thread's stats and call Fini directly before exiting.
+        state->benchmark->flush();
+        g_selected_total.merge(state->benchmark->selected_stats());
+        g_baseline_total.merge(state->benchmark->baseline_stats());
+        Fini(0, nullptr);
         std::exit(0);
     }
 }
@@ -198,6 +206,12 @@ VOID ThreadFini(THREADID tid, const CONTEXT *ctxt, INT32 code, VOID *v) {
 VOID Fini(INT32 code, VOID *v) {
     (void)code;
     (void)v;
+
+    // Guard against double-printing if both the early-exit path and Pin's own
+    // shutdown sequence end up calling Fini.
+    static volatile bool done = false;
+    if (done) return;
+    done = true;
 
     std::ostringstream out;
     out << "adaptive stream buffer pintool\n";

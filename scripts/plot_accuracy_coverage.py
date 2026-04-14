@@ -1,88 +1,106 @@
 #!/usr/bin/env python3
-"""Plot prefetch accuracy and coverage heatmaps across stream_slots and max_prefetch_depth.
+"""Plot prefetch accuracy and coverage heatmaps across stream_slots and max_prefetch_depth."""
 
-Expects the sweep CSV to contain 'accuracy' and 'coverage' columns.
-If those columns are missing, the script attempts to parse them from raw
-Pin output logs stored alongside the CSV (one .log per row file).
-"""
-
-import pandas as pd
+import csv
 import matplotlib.pyplot as plt
+from collections import defaultdict
 from pathlib import Path
 
 CSV_PATH = "stream_buffer_experiments.csv"
 OUTDIR = Path("plots")
 
 
-def plot_heatmap(df, benchmark, value_col, title, outdir):
-    pivot = (
-        df.pivot_table(index="stream_slots", columns="max_prefetch_depth", values=value_col, aggfunc="mean")
-        .sort_index()
-        .sort_index(axis=1)
-    )
+def read_csv(path):
+    rows = []
+    has_accuracy = has_coverage = False
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or []
+        has_accuracy = "accuracy" in fieldnames
+        has_coverage = "coverage" in fieldnames
+        for row in reader:
+            if row["status"] != "ok":
+                continue
+            row["stream_slots"] = int(row["stream_slots"])
+            row["max_prefetch_depth"] = int(row["max_prefetch_depth"])
+            if has_accuracy:
+                row["accuracy"] = float(row["accuracy"])
+            if has_coverage:
+                row["coverage"] = float(row["coverage"])
+            rows.append(row)
+    return rows, has_accuracy, has_coverage
 
+
+def pivot_mean(rows, row_key, col_key, value_key):
+    buckets = defaultdict(list)
+    for row in rows:
+        buckets[(row[row_key], row[col_key])].append(row[value_key])
+    row_vals = sorted(set(r[row_key] for r in rows))
+    col_vals = sorted(set(r[col_key] for r in rows))
+    grid = [
+        [sum(buckets.get((rv, cv), [0.0])) / max(len(buckets.get((rv, cv), [0.0])), 1)
+         for cv in col_vals]
+        for rv in row_vals
+    ]
+    return row_vals, col_vals, grid
+
+
+def plot_heatmap(rows, benchmark, value_col, title, outdir):
+    row_vals, col_vals, grid = pivot_mean(rows, "stream_slots", "max_prefetch_depth", value_col)
     fig, ax = plt.subplots()
-    im = ax.imshow(pivot.values, aspect="auto")
-
-    ax.set_xticks(range(len(pivot.columns)))
-    ax.set_xticklabels(pivot.columns)
-    ax.set_yticks(range(len(pivot.index)))
-    ax.set_yticklabels(pivot.index)
-
+    im = ax.imshow(grid, aspect="auto")
+    ax.set_xticks(range(len(col_vals)))
+    ax.set_xticklabels(col_vals)
+    ax.set_yticks(range(len(row_vals)))
+    ax.set_yticklabels(row_vals)
     ax.set_xlabel("Max Prefetch Depth")
     ax.set_ylabel("Stream Slots")
     ax.set_title(f"{benchmark}: {title}")
-
     fig.colorbar(im)
     fig.tight_layout()
     fig.savefig(outdir / f"{benchmark}_{value_col}_heatmap.png", dpi=200)
     plt.close(fig)
+    print(f"  wrote {benchmark}_{value_col}_heatmap.png")
 
 
-def plot_line(df, benchmark, value_col, ylabel, outdir):
+def plot_line(rows, benchmark, value_col, ylabel, outdir):
     fig, ax = plt.subplots()
-
-    for slots, group in sorted(df.groupby("stream_slots")):
-        group = group.sort_values("max_prefetch_depth")
-        ax.plot(group["max_prefetch_depth"], group[value_col], marker="o", label=f"slots={slots}")
-
+    slots_groups = defaultdict(list)
+    for row in rows:
+        slots_groups[row["stream_slots"]].append(row)
+    for slots in sorted(slots_groups.keys()):
+        group = sorted(slots_groups[slots], key=lambda r: r["max_prefetch_depth"])
+        ax.plot([r["max_prefetch_depth"] for r in group],
+                [r[value_col] for r in group],
+                marker="o", label=f"slots={slots}")
     ax.set_xlabel("Max Prefetch Depth")
     ax.set_ylabel(ylabel)
     ax.set_title(f"{benchmark}: {ylabel} vs Max Prefetch Depth")
     ax.legend()
     ax.grid(True)
-
     fig.tight_layout()
     fig.savefig(outdir / f"{benchmark}_{value_col}_vs_depth.png", dpi=200)
     plt.close(fig)
+    print(f"  wrote {benchmark}_{value_col}_vs_depth.png")
 
 
 def main():
     OUTDIR.mkdir(exist_ok=True)
-
-    df = pd.read_csv(CSV_PATH)
-    df = df[df["status"] == "ok"]
-
-    # Only plot accuracy/coverage if the columns exist in the CSV
-    has_accuracy = "accuracy" in df.columns
-    has_coverage = "coverage" in df.columns
+    rows, has_accuracy, has_coverage = read_csv(CSV_PATH)
 
     if not has_accuracy and not has_coverage:
-        print("No accuracy/coverage columns found in CSV.")
-        print("Re-run the sweep script with accuracy/coverage extraction enabled,")
-        print("or manually add 'accuracy' and 'coverage' columns to the CSV.")
+        print("No accuracy/coverage columns in CSV — skipping accuracy/coverage plots.")
         return
 
-    # Filter to adaptive policy only (off/nextline have no meaningful accuracy)
-    adaptive_df = df[df["policy"] == "adaptive"]
-
-    for benchmark, group in adaptive_df.groupby("benchmark"):
+    adaptive_rows = [r for r in rows if r["policy"] == "adaptive"]
+    for benchmark in sorted(set(r["benchmark"] for r in adaptive_rows)):
+        bench_rows = [r for r in adaptive_rows if r["benchmark"] == benchmark]
         if has_accuracy:
-            plot_heatmap(group, benchmark, "accuracy", "Prefetch Accuracy Heatmap", OUTDIR)
-            plot_line(group, benchmark, "accuracy", "Prefetch Accuracy", OUTDIR)
+            plot_heatmap(bench_rows, benchmark, "accuracy", "Prefetch Accuracy Heatmap", OUTDIR)
+            plot_line(bench_rows, benchmark, "accuracy", "Prefetch Accuracy", OUTDIR)
         if has_coverage:
-            plot_heatmap(group, benchmark, "coverage", "Prefetch Coverage Heatmap", OUTDIR)
-            plot_line(group, benchmark, "coverage", "Prefetch Coverage", OUTDIR)
+            plot_heatmap(bench_rows, benchmark, "coverage", "Prefetch Coverage Heatmap", OUTDIR)
+            plot_line(bench_rows, benchmark, "coverage", "Prefetch Coverage", OUTDIR)
 
 
 if __name__ == "__main__":

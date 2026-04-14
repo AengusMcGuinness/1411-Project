@@ -196,19 +196,18 @@ reap_finished_jobs() {
     for i in "${!pids[@]}"; do
         pid="${pids[$i]}"
         status="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
-        case "$status" in
-            *Z*)
-                wait "$pid" || true
-                completed_jobs=$((completed_jobs + 1))
-                active_jobs=$((active_jobs - 1))
-                log_progress "completed" "$completed_jobs" "$active_jobs" "${job_labels[$i]}"
-                reaped_any=0
-                ;;
-            *)
-                remaining_pids+=("$pid")
-                remaining_labels+=("${job_labels[$i]}")
-                ;;
-        esac
+        # Treat both zombie (Z) and gone (empty — bash already auto-reaped it when
+        # it forked for the command substitution above) as completed.
+        if [ -z "$status" ] || [[ "$status" == *Z* ]]; then
+            wait "$pid" 2>/dev/null || true
+            completed_jobs=$((completed_jobs + 1))
+            active_jobs=$((active_jobs - 1))
+            log_progress "completed" "$completed_jobs" "$active_jobs" "${job_labels[$i]}"
+            reaped_any=0
+        else
+            remaining_pids+=("$pid")
+            remaining_labels+=("${job_labels[$i]}")
+        fi
     done
 
     pids=("${remaining_pids[@]}")

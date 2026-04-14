@@ -2,4 +2,10 @@ build/
 pintool/obj-*/
 *.o
 *.so
+.venv/
+logs/
+smoke_test.csv
+stream_buffer_experiments.csv
+plots/*.png
+plots/hardware_cost_summary.csv
 

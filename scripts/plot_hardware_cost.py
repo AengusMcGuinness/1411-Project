@@ -7,8 +7,9 @@ Hardware cost is estimated from configuration parameters:
   Histogram     = 2 * (max_stream_length + 2) * 16  [current + next epoch]
 """
 
-import pandas as pd
+import csv
 import matplotlib.pyplot as plt
+from collections import defaultdict
 from pathlib import Path
 
 CSV_PATH = "stream_buffer_experiments.csv"
@@ -29,23 +30,35 @@ def compute_hardware_bits(row):
     return stream_table + prefetch_buf + histogram
 
 
+def read_csv(path):
+    rows = []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            if row["status"] != "ok":
+                continue
+            row["speedup"] = float(row["speedup"])
+            row["hardware_bits"] = compute_hardware_bits(row)
+            rows.append(row)
+    return rows
+
+
 def main():
     OUTDIR.mkdir(exist_ok=True)
-    df = pd.read_csv(CSV_PATH)
-    df = df[df["status"] == "ok"]
-
-    df["hardware_bits"] = df.apply(compute_hardware_bits, axis=1)
-
-    benchmarks = sorted(df["benchmark"].unique())
+    rows = read_csv(CSV_PATH)
+    benchmarks = sorted(set(r["benchmark"] for r in rows))
+    print(f"Loaded {len(rows)} ok rows, benchmarks: {benchmarks}")
 
     fig, axes = plt.subplots(len(benchmarks), 1, figsize=(8, 5 * len(benchmarks)))
     if len(benchmarks) == 1:
         axes = [axes]
 
     for ax, benchmark in zip(axes, benchmarks):
-        bench_df = df[df["benchmark"] == benchmark]
-        for policy, pdf in sorted(bench_df.groupby("policy")):
-            ax.scatter(pdf["hardware_bits"], pdf["speedup"], label=policy, alpha=0.7, s=40)
+        bench_rows = [r for r in rows if r["benchmark"] == benchmark]
+        for policy in sorted(set(r["policy"] for r in bench_rows)):
+            policy_rows = [r for r in bench_rows if r["policy"] == policy]
+            xs = [r["hardware_bits"] for r in policy_rows]
+            ys = [r["speedup"] for r in policy_rows]
+            ax.scatter(xs, ys, label=policy, alpha=0.7, s=40)
 
         ax.set_xlabel("Hardware Cost (bits)")
         ax.set_ylabel("Speedup vs. Baseline")
@@ -56,15 +69,19 @@ def main():
     plt.tight_layout()
     fig.savefig(OUTDIR / "hardware_cost_vs_speedup.png", dpi=200)
     plt.close(fig)
+    print("  wrote hardware_cost_vs_speedup.png")
 
-    # Also save a summary table
-    summary = (
-        df.groupby(["benchmark", "policy", "hardware_bits"])["speedup"]
-        .mean()
-        .reset_index()
-        .sort_values(["benchmark", "hardware_bits"])
-    )
-    summary.to_csv(OUTDIR / "hardware_cost_summary.csv", index=False)
+    # Summary CSV grouped by (benchmark, policy, hardware_bits)
+    buckets = defaultdict(list)
+    for row in rows:
+        buckets[(row["benchmark"], row["policy"], row["hardware_bits"])].append(row["speedup"])
+
+    with open(OUTDIR / "hardware_cost_summary.csv", "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["benchmark", "policy", "hardware_bits", "speedup"])
+        for (bench, policy, hw), speeds in sorted(buckets.items()):
+            writer.writerow([bench, policy, hw, sum(speeds) / len(speeds)])
+    print("  wrote hardware_cost_summary.csv")
 
 
 if __name__ == "__main__":

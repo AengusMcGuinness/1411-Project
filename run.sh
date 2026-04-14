@@ -4,9 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-mkdir -p logs
+# ── 0. Clean previous outputs ─────────────────────────────────────
+echo ">> Cleaning previous outputs..."
+rm -rf logs plots smoke_test.csv stream_buffer_experiments.csv
+mkdir -p logs plots
 
-# ── 0. Check PIN_ROOT ──────────────────────────────────────────────
+# ── 1. Check PIN_ROOT ──────────────────────────────────────────────
 if [ -z "${PIN_ROOT:-}" ]; then
     echo "ERROR: PIN_ROOT is not set. Run: export PIN_ROOT=\$PIN_ROOT"
     exit 1
@@ -15,7 +18,7 @@ echo "PIN_ROOT=$PIN_ROOT"
 echo "PIN_BIN=$PIN_ROOT/pin"
 ls -la "$PIN_ROOT/pin" || { echo "ERROR: pin binary not found"; exit 1; }
 
-# ── 1. Copy benchmarks if missing ──────────────────────────────────
+# ── 2. Copy benchmarks if missing ──────────────────────────────────
 if [ ! -d benchmarks ]; then
     echo ">> Copying benchmarks from ASSIGNMENT3..."
     if [ -d "$HOME/workspace/ASSIGNMENT3/benchmarks" ]; then
@@ -30,15 +33,15 @@ echo ">> Benchmarks:"
 ls -la benchmarks/
 ls -la benchmarks/inputs/
 
-# ── 2. Build the pintool ───────────────────────────────────────────
-echo ">> Building pintool..."
-make pin PIN_ROOT="$PIN_ROOT"
+# ── 3. Build the pintool (always clean to avoid stale binaries) ────
+echo ">> Building pintool (clean + rebuild)..."
+make pin-clean pin PIN_ROOT="$PIN_ROOT"
 
 PIN_TOOL="pintool/obj-intel64/adaptive_stream_buffer_pintool.so"
 echo ">> Checking pintool .so exists:"
 ls -la "$PIN_TOOL" || { echo "ERROR: pintool .so not found"; exit 1; }
 
-# ── 3. DEBUG: Run ONE Pin invocation directly to see raw output ────
+# ── 4. DEBUG: Run ONE Pin invocation directly to see raw output ────
 echo ""
 echo "========================================"
 echo "  DEBUG: Running single Pin invocation"
@@ -94,8 +97,8 @@ echo "  If it looks correct, the sweep should work."
 echo "========================================"
 echo ""
 
-# ── 4. Quick smoke test ────────────────────────────────────────────
-echo ">> Running smoke test (2 configs, 1M instructions)..."
+# ── 5. Quick smoke test ────────────────────────────────────────────
+echo ">> Running smoke test (2 configs, 1M instructions — pipeline check only)..."
 PIN_ROOT="$PIN_ROOT" \
 MAX_JOBS=4 \
 MAX_INSTRUCTIONS=1000000 \
@@ -107,11 +110,11 @@ echo ">> Smoke test results:"
 cat smoke_test.csv
 echo ""
 
-# ── 5. Full sweep ──────────────────────────────────────────────────
+# ── 6. Full sweep ──────────────────────────────────────────────────
 echo ">> Running full parameter sweep..."
 PIN_ROOT="$PIN_ROOT" \
 MAX_JOBS=4 \
-MAX_INSTRUCTIONS=1000000 \
+MAX_INSTRUCTIONS=0 \
 POLICY_VALUES="off nextline adaptive" \
 STREAM_SLOTS_VALUES="4 8 16" \
 MAX_PREFETCH_DEPTH_VALUES="1 2 4 8" \
@@ -120,11 +123,11 @@ MAX_STREAM_LENGTH_VALUES="8 16 32" \
 
 echo ">> Sweep complete."
 
-# ── 6. Generate plots ─────────────────────────────────────────────
+# ── 7. Generate plots ─────────────────────────────────────────────
 echo ">> Generating plots..."
-python3 scripts/plot_speedup.py
-python3 scripts/plot_hardware_cost.py
-python3 scripts/plot_accuracy_coverage.py
+.venv/bin/python3 scripts/plot_speedup.py
+.venv/bin/python3 scripts/plot_hardware_cost.py
+.venv/bin/python3 scripts/plot_accuracy_coverage.py
 
 echo ""
 echo "========================================="
