@@ -19,7 +19,7 @@ HMMER_CMD=( "$BENCH_DIR/hmmer_O3" "$BENCH_DIR/inputs/nph3.hmm" "$BENCH_DIR/input
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [assoc|victim|compare|native|all]
+Usage: $(basename "$0") [assoc|victim|compare|stream|native|all]
 
 Environment overrides:
   CONFIG_BASE   Path to the course config-base file
@@ -88,9 +88,12 @@ check_paths() {
 make_config() {
   local assoc="$1"
   local victim="$2"
-  local dest="$3"
+  local stream_depth="${3:-}"    # optional 5th field on L1D line
+  local stream_streams="${4:-}"  # optional 6th field on L1D line
+  local dest="$5"
 
-  awk -v assoc="$assoc" -v victim="$victim" '
+  awk -v assoc="$assoc" -v victim="$victim" \
+      -v stream_depth="$stream_depth" -v stream_streams="$stream_streams" '
     function trim(s) {
       gsub(/^[[:space:]]+/, "", s)
       gsub(/[[:space:]]+$/, "", s)
@@ -115,6 +118,14 @@ make_config() {
         line = trim(fields[1]) ", " trim(fields[2]) ", " assoc
         if (victim != "") {
           line = line ", " victim
+        } else if (stream_depth != "") {
+          line = line ", 0"
+        }
+        if (stream_depth != "") {
+          line = line ", " stream_depth
+          if (stream_streams != "") {
+            line = line ", " stream_streams
+          }
         }
         print line
       } else {
@@ -158,25 +169,29 @@ extract_metric() {
 run_case() {
   local assoc="$1"
   local victim="$2"
-  local label="$3"
-  shift 3
+  local stream_depth="$3"    # "" or integer; passed through to make_config
+  local stream_streams="$4"  # "" or integer; passed through to make_config
+  local label="$5"
+  shift 5
 
   local -a bench=( "$@" )
-  local cfg out dmiss vhits
+  local cfg out dmiss vhits sbhits
   cfg="$(mktemp "${TMPDIR:-/tmp}/hw4_cfg.XXXXXX")"
   out="$(mktemp "${TMPDIR:-/tmp}/hw4_out.XXXXXX")"
 
   log_step "$label"
-  make_config "$assoc" "$victim" "$cfg"
+  make_config "$assoc" "$victim" "$stream_depth" "$stream_streams" "$cfg"
   run_pin "$cfg" "$out" "${bench[@]}"
 
-  dmiss="$(extract_metric "$out" "D-Cache Miss:")"
-  vhits="$(extract_metric "$out" "Victim-Cache Hits:")"
-  [[ -n "$dmiss" ]] || dmiss=0
-  [[ -n "$vhits" ]] || vhits=0
+  dmiss="$(extract_metric  "$out" "D-Cache Miss:")"
+  vhits="$(extract_metric  "$out" "Victim-Cache Hits:")"
+  sbhits="$(extract_metric "$out" "Stream-Buffer Hits:")"
+  [[ -n "$dmiss"  ]] || dmiss=0
+  [[ -n "$vhits"  ]] || vhits=0
+  [[ -n "$sbhits" ]] || sbhits=0
 
   rm -f "$cfg" "$out"
-  printf '%s,%s\n' "$dmiss" "$vhits"
+  printf '%s,%s,%s\n' "$dmiss" "$vhits" "$sbhits"
 }
 
 run_native_capture() {
@@ -308,11 +323,11 @@ run_assoc_sweep() {
   printf 'associativity,libquantum,hmmer\n' > "$csv_file"
   for assoc in 1 2 4 8; do
     local q h
-    IFS=, read -r q _ <<EOF
-$(run_case "$assoc" "" "assoc=$assoc libquantum" "${LIBQUANTUM_CMD[@]}")
+    IFS=, read -r q _ _ <<EOF
+$(run_case "$assoc" "" "" "" "assoc=$assoc libquantum" "${LIBQUANTUM_CMD[@]}")
 EOF
-    IFS=, read -r h _ <<EOF
-$(run_case "$assoc" "" "assoc=$assoc hmmer" "${HMMER_CMD[@]}")
+    IFS=, read -r h _ _ <<EOF
+$(run_case "$assoc" "" "" "" "assoc=$assoc hmmer" "${HMMER_CMD[@]}")
 EOF
     printf '%s,%s,%s\n' "$assoc" "$q" "$h" >> "$csv_file"
     log_info "Associativity $assoc complete: libquantum=$q, hmmer=$h"
@@ -348,11 +363,11 @@ run_victim_sweep_dm() {
 
   for entries in 1 2 3 4 5 6 7 8; do
     local q h qd qv hd hv
-    IFS=, read -r qd qv <<EOF
-$(run_case 1 "$entries" "victim=$entries libquantum" "${LIBQUANTUM_CMD[@]}")
+    IFS=, read -r qd qv _ <<EOF
+$(run_case 1 "$entries" "" "" "victim=$entries libquantum" "${LIBQUANTUM_CMD[@]}")
 EOF
-    IFS=, read -r hd hv <<EOF
-$(run_case 1 "$entries" "victim=$entries hmmer" "${HMMER_CMD[@]}")
+    IFS=, read -r hd hv _ <<EOF
+$(run_case 1 "$entries" "" "" "victim=$entries hmmer" "${HMMER_CMD[@]}")
 EOF
     q=$(( qd - qv ))
     h=$(( hd - hv ))
@@ -394,17 +409,17 @@ run_compare_sweep() {
 
   for entries in 1 2 3 4 5 6 7 8; do
     local qdm qd_hits q8 q8_hits hdm hd_hits h8 h8_hits
-    IFS=, read -r qdm qd_hits <<EOF
-$(run_case 1 "$entries" "compare dm victim=$entries libquantum" "${LIBQUANTUM_CMD[@]}")
+    IFS=, read -r qdm qd_hits _ <<EOF
+$(run_case 1 "$entries" "" "" "compare dm victim=$entries libquantum" "${LIBQUANTUM_CMD[@]}")
 EOF
-    IFS=, read -r q8 q8_hits <<EOF
-$(run_case 8 "$entries" "compare 8way victim=$entries libquantum" "${LIBQUANTUM_CMD[@]}")
+    IFS=, read -r q8 q8_hits _ <<EOF
+$(run_case 8 "$entries" "" "" "compare 8way victim=$entries libquantum" "${LIBQUANTUM_CMD[@]}")
 EOF
-    IFS=, read -r hdm hd_hits <<EOF
-$(run_case 1 "$entries" "compare dm victim=$entries hmmer" "${HMMER_CMD[@]}")
+    IFS=, read -r hdm hd_hits _ <<EOF
+$(run_case 1 "$entries" "" "" "compare dm victim=$entries hmmer" "${HMMER_CMD[@]}")
 EOF
-    IFS=, read -r h8 h8_hits <<EOF
-$(run_case 8 "$entries" "compare 8way victim=$entries hmmer" "${HMMER_CMD[@]}")
+    IFS=, read -r h8 h8_hits _ <<EOF
+$(run_case 8 "$entries" "" "" "compare 8way victim=$entries hmmer" "${HMMER_CMD[@]}")
 EOF
 
     printf '%s,%s,%s\n' "$entries" $(( qdm - qd_hits )) $(( q8 - q8_hits )) >> "$lib_csv"
@@ -446,6 +461,63 @@ EOF
   fi
 }
 
+run_stream_sweep() {
+  local out_dir="$OUT_DIR/stream"
+  mkdir -p "$out_dir"
+
+  local csv_file="$out_dir/stream_misses.csv"
+  log_section "Stream Buffer Sweep (direct-mapped L1D, 1 stream)"
+  # Columns: stream depth, raw L1D misses, stream-buffer hits,
+  #          effective misses (L1D - SB hits) — for both benchmarks.
+  printf 'depth,lq_l1d,lq_sbhits,lq_eff,hmmer_l1d,hmmer_sbhits,hmmer_eff\n' > "$csv_file"
+
+  for depth in 0 1 2 4 8; do
+    local qdm qsb hdm hsb q_eff h_eff _v
+    IFS=, read -r qdm _v qsb <<EOF
+$(run_case 1 "" "$depth" "1" "stream depth=$depth libquantum" "${LIBQUANTUM_CMD[@]}")
+EOF
+    IFS=, read -r hdm _v hsb <<EOF
+$(run_case 1 "" "$depth" "1" "stream depth=$depth hmmer" "${HMMER_CMD[@]}")
+EOF
+    q_eff=$(( qdm - qsb ))
+    h_eff=$(( hdm - hsb ))
+    printf '%s,%s,%s,%s,%s,%s,%s\n' \
+      "$depth" "$qdm" "$qsb" "$q_eff" "$hdm" "$hsb" "$h_eff" >> "$csv_file"
+    log_info "Stream depth $depth: libquantum L1D=$qdm SBhits=$qsb eff=$q_eff | hmmer L1D=$hdm SBhits=$hsb eff=$h_eff"
+  done
+
+  render_series_plot \
+    "$csv_file" \
+    "$out_dir/stream_libquantum.png" \
+    "depth" \
+    "lq_l1d" \
+    "lq_eff" \
+    "Stream Buffer: libquantum (direct-mapped L1D)" \
+    "Stream Buffer Depth (lines)" \
+    "L1D misses" \
+    "no prefetch (raw L1D)" \
+    "with stream buffer (effective)" \
+    "" "" ""
+
+  render_series_plot \
+    "$csv_file" \
+    "$out_dir/stream_hmmer.png" \
+    "depth" \
+    "hmmer_l1d" \
+    "hmmer_eff" \
+    "Stream Buffer: hmmer (direct-mapped L1D)" \
+    "Stream Buffer Depth (lines)" \
+    "L1D misses" \
+    "no prefetch (raw L1D)" \
+    "with stream buffer (effective)" \
+    "" "" ""
+
+  echo "Stream buffer sweep CSV: $csv_file"
+  if [[ "$GENERATE_PLOTS" == "1" ]]; then
+    echo "Stream buffer plots: $out_dir/stream_libquantum.png, $out_dir/stream_hmmer.png"
+  fi
+}
+
 run_native_mode() {
   log_section "Native LIKWID Captures"
   run_native_capture "libquantum" "${LIBQUANTUM_CMD[@]}"
@@ -455,7 +527,7 @@ run_native_mode() {
 main() {
   local mode="${1:-all}"
   case "$mode" in
-    assoc|victim|compare|native|all)
+    assoc|victim|compare|stream|native|all)
       ;;
     -h|--help|help)
       usage
@@ -485,6 +557,9 @@ main() {
     compare)
       run_compare_sweep
       ;;
+    stream)
+      run_stream_sweep
+      ;;
     native)
       run_native_mode
       ;;
@@ -492,6 +567,7 @@ main() {
       run_assoc_sweep
       run_victim_sweep_dm
       run_compare_sweep
+      run_stream_sweep
       run_native_mode
       ;;
   esac
