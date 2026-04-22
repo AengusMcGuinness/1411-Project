@@ -226,7 +226,7 @@ private:
     int    depth;
     int    nStreams;
     cache *nextLevel;
-
+    
     Stream *streams;
     int    allocClock;   // round-robin index used when all slots are valid
 
