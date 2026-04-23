@@ -239,6 +239,28 @@ def plot_stream_l2_requests(csv_path: Path, out_dir: Path) -> None:
     )
 
 
+def plot_streams_eff_misses(csv_path: Path, out_dir: Path) -> None:
+    """Effective L1D misses vs number of concurrent streams (depth=1)."""
+    plot_multi_series(
+        csv_path,
+        out_dir,
+        title="Stream Buffer: Effective L1D Misses vs Number of Streams",
+        xlabel="Number of Concurrent Streams (S)",
+        ylabel="Effective L1D Misses  (L1D misses − SB hits)",
+    )
+
+
+def plot_streams_l2_requests(csv_path: Path, out_dir: Path) -> None:
+    """Total L2 requests vs number of concurrent streams (depth=1)."""
+    plot_multi_series(
+        csv_path,
+        out_dir,
+        title="Stream Buffer: Total L2 Requests vs Number of Streams",
+        xlabel="Number of Concurrent Streams (S)",
+        ylabel="Total L2 Requests  (demand + prefetch)",
+    )
+
+
 def plot_cacti_access_time(csv_path: Path, out_dir: Path) -> None:
     plot_single_series(
         csv_path,
@@ -283,6 +305,12 @@ def plot_file(csv_path: Path, out_dir: Path) -> bool:
         return True
     if stem == "stream_l2_requests":
         plot_stream_l2_requests(csv_path, out_dir)
+        return True
+    if stem == "streams_eff_misses":
+        plot_streams_eff_misses(csv_path, out_dir)
+        return True
+    if stem == "streams_l2_requests":
+        plot_streams_l2_requests(csv_path, out_dir)
         return True
 
     header, _ = read_csv(csv_path)
