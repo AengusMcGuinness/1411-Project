@@ -21,7 +21,7 @@ HMMER_CMD=( "$BENCH_DIR/hmmer_O3" "$BENCH_DIR/inputs/nph3.hmm" "$BENCH_DIR/input
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [assoc|victim|compare|stream|native|all]
+Usage: $(basename "$0") [assoc|victim|compare|stream|streams|2d|native|all]
 
 Environment overrides:
   CONFIG_BASE   Path to the course config-base file
@@ -598,6 +598,98 @@ run_stream_sweep() {
   fi
 }
 
+run_streams_sweep() {
+  local out_dir="$OUT_DIR/streams"
+  mkdir -p "$out_dir"
+
+  local eff_csv="$out_dir/streams_eff_misses.csv"
+  local l2_csv="$out_dir/streams_l2_requests.csv"
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/hw4_streams.XXXXXX")"
+
+  log_section "Stream Count Sweep (depth=1, direct-mapped L1D, JOBS=$JOBS)"
+  printf 'streams,libquantum,hmmer\n' > "$eff_csv"
+  printf 'streams,libquantum,hmmer\n' > "$l2_csv"
+
+  # 10 jobs: 5 stream counts × 2 benchmarks
+  _pool_pids=()
+  for s in 1 2 4 8 16; do
+    pool_launch "$tmp_dir/lq_${s}" 1 "" 1 "$s" "streams=$s libquantum" "${LIBQUANTUM_CMD[@]}"
+    pool_launch "$tmp_dir/hm_${s}" 1 "" 1 "$s" "streams=$s hmmer"      "${HMMER_CMD[@]}"
+  done
+  pool_drain
+
+  for s in 1 2 4 8 16; do
+    local qdm _v qsb ql2 hdm hsb hl2
+    IFS=, read -r qdm _v qsb ql2 < "$tmp_dir/lq_${s}"
+    IFS=, read -r hdm _v hsb hl2 < "$tmp_dir/hm_${s}"
+    qdm="${qdm:-0}"; qsb="${qsb:-0}"; ql2="${ql2:-0}"
+    hdm="${hdm:-0}"; hsb="${hsb:-0}"; hl2="${hl2:-0}"
+    printf '%s,%s,%s\n' "$s" "$(( qdm - qsb ))" "$(( hdm - hsb ))" >> "$eff_csv"
+    printf '%s,%s,%s\n' "$s" "$ql2"              "$hl2"              >> "$l2_csv"
+    log_info "Streams $s: libquantum eff=$(( qdm - qsb )) L2req=$ql2 | hmmer eff=$(( hdm - hsb )) L2req=$hl2"
+  done
+  rm -rf "$tmp_dir"
+
+  echo "Stream count CSVs: $eff_csv, $l2_csv"
+}
+
+run_2d_sweep() {
+  local out_dir="$OUT_DIR/2d"
+  mkdir -p "$out_dir"
+
+  # One effective-miss CSV per benchmark; columns are stream counts.
+  # Rows iterate over depth, so each cell is (depth, S) → eff misses.
+  local lq_eff_csv="$out_dir/2d_libquantum_eff.csv"
+  local hm_eff_csv="$out_dir/2d_hmmer_eff.csv"
+  local lq_l2_csv="$out_dir/2d_libquantum_l2.csv"
+  local hm_l2_csv="$out_dir/2d_hmmer_l2.csv"
+  local tmp_dir
+  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/hw4_2d.XXXXXX")"
+
+  log_section "2D Depth x Streams Sweep (direct-mapped L1D, JOBS=$JOBS)"
+  printf 'depth,s1,s2,s4,s8\n' > "$lq_eff_csv"
+  printf 'depth,s1,s2,s4,s8\n' > "$hm_eff_csv"
+  printf 'depth,s1,s2,s4,s8\n' > "$lq_l2_csv"
+  printf 'depth,s1,s2,s4,s8\n' > "$hm_l2_csv"
+
+  # 40 jobs: 5 depths × 4 stream counts × 2 benchmarks
+  _pool_pids=()
+  for depth in 0 1 2 4 8; do
+    for s in 1 2 4 8; do
+      pool_launch "$tmp_dir/lq_d${depth}_s${s}" 1 "" "$depth" "$s" \
+        "2d depth=$depth s=$s libquantum" "${LIBQUANTUM_CMD[@]}"
+      pool_launch "$tmp_dir/hm_d${depth}_s${s}" 1 "" "$depth" "$s" \
+        "2d depth=$depth s=$s hmmer"      "${HMMER_CMD[@]}"
+    done
+  done
+  pool_drain
+
+  for depth in 0 1 2 4 8; do
+    local lq_eff_row="$depth" hm_eff_row="$depth"
+    local lq_l2_row="$depth"  hm_l2_row="$depth"
+    for s in 1 2 4 8; do
+      local qdm _v qsb ql2 hdm hsb hl2
+      IFS=, read -r qdm _v qsb ql2 < "$tmp_dir/lq_d${depth}_s${s}"
+      IFS=, read -r hdm _v hsb hl2 < "$tmp_dir/hm_d${depth}_s${s}"
+      qdm="${qdm:-0}"; qsb="${qsb:-0}"; ql2="${ql2:-0}"
+      hdm="${hdm:-0}"; hsb="${hsb:-0}"; hl2="${hl2:-0}"
+      lq_eff_row="$lq_eff_row,$(( qdm - qsb ))"
+      hm_eff_row="$hm_eff_row,$(( hdm - hsb ))"
+      lq_l2_row="$lq_l2_row,$ql2"
+      hm_l2_row="$hm_l2_row,$hl2"
+      log_info "2D depth=$depth s=$s: lq_eff=$(( qdm - qsb )) lq_l2=$ql2 | hm_eff=$(( hdm - hsb )) hm_l2=$hl2"
+    done
+    printf '%s\n' "$lq_eff_row" >> "$lq_eff_csv"
+    printf '%s\n' "$hm_eff_row" >> "$hm_eff_csv"
+    printf '%s\n' "$lq_l2_row"  >> "$lq_l2_csv"
+    printf '%s\n' "$hm_l2_row"  >> "$hm_l2_csv"
+  done
+  rm -rf "$tmp_dir"
+
+  echo "2D sweep CSVs: $lq_eff_csv, $hm_eff_csv, $lq_l2_csv, $hm_l2_csv"
+}
+
 run_native_mode() {
   log_section "Native LIKWID Captures"
   run_native_capture "libquantum" "${LIBQUANTUM_CMD[@]}"
@@ -607,7 +699,7 @@ run_native_mode() {
 main() {
   local mode="${1:-all}"
   case "$mode" in
-    assoc|victim|compare|stream|native|all)
+    assoc|victim|compare|stream|streams|2d|native|all)
       ;;
     -h|--help|help)
       usage
@@ -640,6 +732,12 @@ main() {
     stream)
       run_stream_sweep
       ;;
+    streams)
+      run_streams_sweep
+      ;;
+    2d)
+      run_2d_sweep
+      ;;
     native)
       run_native_mode
       ;;
@@ -648,6 +746,8 @@ main() {
       run_victim_sweep_dm
       run_compare_sweep
       run_stream_sweep
+      run_streams_sweep
+      run_2d_sweep
       run_native_mode
       ;;
   esac
