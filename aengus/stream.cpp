@@ -26,8 +26,6 @@ class cache
 public:
     virtual ~cache() {};
 
-    // Access the generic cache.
-    // You might want to override this in L1D to access the victim cache.
     virtual void addressRequest( unsigned long address);
 
     // Get Statistics Methods
@@ -115,41 +113,7 @@ public:
     }
 };
 
-class victim_cache;
 class stream_buf;
-
-class victim_cache : public cache {
-public:
-    // The victim cache is modeled as a fully associative buffer that holds
-    // recently evicted L1D lines. Its "associativity" is the number of victim
-    // entries, not a banked or set-associative organization.
-    victim_cache(int blockSize, int totalCacheSize, cache *nextLevel);
-
-    // Probe the victim cache for the requested block address.
-    // replacementAddress is the line displaced from L1D, if one exists.
-    // replacementValid indicates whether that displaced L1D line is valid.
-    // If the victim cache hits, the caller can avoid going to L2.
-    bool access(unsigned long address, unsigned long replacementAddress, bool replacementValid);
-
-    // Insert a block that was evicted from L1D after the miss was serviced.
-    // If the victim cache is full, evict its own LRU entry and write that
-    // victim line back to the next level of the hierarchy.
-    void insert(unsigned long address);
-
-private:
-    // Find the first unused victim entry, or -1 if all entries are occupied.
-    int firstInvalidEntry();
-
-    // Reconstruct the block-aligned address represented by a victim-cache tag.
-    // Because the victim cache is fully associative, the tag is effectively
-    // the block number with no set field.
-    unsigned long lineAddress(int entryIndex);
-
-    // Remove an entry after it has been consumed by a victim-cache hit and
-    // there is no L1D eviction to swap into the same slot.
-    void removeEntry(int entryIndex);
-
-};
 
 class l1icache : public cache {
 public:
@@ -160,21 +124,15 @@ public:
 
 class l1dcache : public cache {
 public:
-    // L1D keeps a direct pointer to the victim cache and the stream buffer so
-    // a miss can probe both before the simulator falls back to L2.
     l1dcache( int blockSize, int totalCacheSize, int associativity, cache *nextLevel,
-              victim_cache *victimLevel, stream_buf *streamLevel) :
+              stream_buf *streamLevel) :
         cache( blockSize, totalCacheSize, associativity, nextLevel, true),
-        victimLevel(victimLevel),
         streamLevel(streamLevel)
     { }
 
-    // Extend the normal cache miss path so L1D consults the victim cache
-    // and then the stream buffer before falling back to L2.
     void addressRequest( unsigned long address);
 
 private:
-    victim_cache *victimLevel;
     stream_buf   *streamLevel;
 };
 
@@ -272,7 +230,6 @@ l1icache*   icache;
 l1dcache*   dcache;
 l2cache*    llcache;
 memory*     mem;
-victim_cache* vcache;
 stream_buf*  sbuf;
 
 // Keep track if instruction counts so we know when to end simmulation
@@ -360,122 +317,6 @@ void stream_buf::allocate_stream(unsigned long address)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-// TODO: you will need to implement functions which will be called for the victim cache!
-victim_cache::victim_cache( int blockSize, int totalCacheSize, cache *nextLevel) :
-    // A victim cache is fully associative. We size the underlying cache array
-    // so that each entry represents one victim line, and we keep the same
-    // block size as L1D because the victim buffer stores whole cache lines.
-    cache( blockSize, totalCacheSize, totalCacheSize / blockSize, nextLevel, true)
-    { }
-
-int victim_cache::firstInvalidEntry()
-{
-    // Prefer an empty slot over evicting an existing victim entry.
-    for( int i = 0; i < assoc; i++ ) {
-        if( cacheMem[i].Valid == false ) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-unsigned long victim_cache::lineAddress(int entryIndex)
-{
-    // The stored tag is just the block number for the victim line.
-    // Shifting it by the block offset reconstructs the aligned address.
-    return ((unsigned long) cacheMem[entryIndex].Tag) << getBlockOffsetSize();
-}
-
-void victim_cache::removeEntry(int entryIndex)
-{
-    // Record the age of the entry being removed so we can compress the LRU
-    // ordering of the remaining valid entries.
-    int removedLRU = cacheMem[entryIndex].LRU_status;
-
-    // Any entry that was older than the removed one becomes one step newer
-    // because the removed line is no longer participating in the ordering.
-    for( int i = 0; i < assoc; i++ ) {
-        if( i == entryIndex ) {
-            continue;
-        }
-        if( cacheMem[i].Valid && cacheMem[i].LRU_status > removedLRU ) {
-            cacheMem[i].LRU_status--;
-        }
-    }
-
-    // Clear the slot so it can be reused by a later victim insertion.
-    cacheMem[entryIndex].Valid = false;
-    cacheMem[entryIndex].Tag = 0;
-    cacheMem[entryIndex].LRU_status = assoc - 1;
-}
-
-bool victim_cache::access(unsigned long address, unsigned long replacementAddress, bool replacementValid)
-{
-    // Every probe of the victim buffer is counted as a request.
-    addRequest();
-
-    // The victim cache is modeled as a single fully associative set, so the
-    // set index is always 0 and the lookup is purely tag based.
-    int hitIndex = isHit( getTag(address), 0 );
-    if( hitIndex == -1 ) {
-        // Miss in the victim cache. The caller must continue to the next
-        // cache level because the requested block is not in the victim buffer.
-        addTotalMiss();
-        return false;
-    }
-
-    // Record the victim-cache hit separately from the original L1D miss.
-    addHit();
-
-    // On a victim hit, the requested line is recovered from the victim cache.
-    // If L1D had a valid victim line of its own, we overwrite the victim slot
-    // with that displaced line. Otherwise, we simply remove the hit entry.
-    if( replacementValid ) {
-        cacheMem[hitIndex].Tag = getTag(replacementAddress);
-        cacheMem[hitIndex].Valid = true;
-        updateLRU( 0, hitIndex );
-    } else {
-        removeEntry( hitIndex );
-    }
-
-    return true;
-}
-
-void victim_cache::insert(unsigned long address)
-{
-    // Insert happens after L1D has already missed and the miss was serviced
-    // by the lower levels. The evicted L1D line is now moved into the victim
-    // buffer so it can rescue future conflict misses.
-    int index = firstInvalidEntry();
-    if( index == -1 ) {
-        // No empty slot exists, so reuse the least-recently used victim entry.
-        index = getLRU( 0 );
-    }
-
-    if( cacheMem[index].Valid ) {
-        // If the victim buffer is full, the line being replaced must itself be
-        // evicted from the victim cache. The simulator treats that eviction as
-        // a writeback to the next cache level.
-        unsigned long evictedAddress = lineAddress( index );
-        addEntryRemoved();
-        if( nextLevel != nullptr ) {
-            nextLevel->addressRequest( evictedAddress );
-        }
-    }
-
-    // Store the new victim line and mark it as the most recently used entry.
-    cacheMem[index].Tag = getTag( address );
-    cacheMem[index].Valid = true;
-    updateLRU( 0, index );
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////
-    
-
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////////////////////////////////////////////
 cache::cache( int blockSize, int totalCacheSize, int associativity, cache* nextLevel, bool writebackDirty) :
     // Set Cache properties
     blockSz(blockSize),
@@ -507,74 +348,36 @@ cache::cache( int blockSize, int totalCacheSize, int associativity, cache* nextL
 
 void l1dcache::addressRequest( unsigned long address )
 {
-    // Start by translating the requested byte address into tag and set fields.
     unsigned long tagField = getTag( address );
     unsigned long setField = getSet( address );
     int index = isHit( tagField, setField );
 
-    // Every access counts as an L1D request, even if it ultimately hits.
     addRequest();
 
     if( index != -1 ) {
-        // L1D hit: update the replacement metadata and stop.
         addHit();
         updateLRU( setField, index );
         return;
     }
 
-    // L1D miss: the line must be brought in from below.
     addTotalMiss();
 
-    // Identify the L1D line that will be displaced to make room for the new
-    // block. If that line is valid, its block address can be passed to the
-    // victim cache for a possible swap or insertion.
     int indexLRU = getLRU( setField );
-    bool hasVictim = cacheMem[ indexLRU + setField * assoc ].Valid == true;
-    unsigned long evictedAddress = 0;
 
-    if( hasVictim ) {
-        unsigned long evictedTag = cacheMem[ indexLRU + setField * assoc ].Tag;
-        evictedAddress = evictedTag;
-        evictedAddress = evictedAddress << ( getSetSize() + getBlockOffsetSize() );
-        evictedAddress |= ( (unsigned long) setField << getBlockOffsetSize() );
-    }
-
-    // Probe the victim cache before going to L2. This is the key addition that
-    // turns the direct-mapped L1D miss into a victim-cache-assisted access.
-    bool victimHit = false;
-    if( victimLevel != nullptr ) {
-        victimHit = victimLevel->access( address, evictedAddress, hasVictim );
-    }
-
-    // If the victim cache missed, check the stream buffer next.
-    // A stream-buffer hit means the line was already prefetched sequentially
-    // and is waiting at the head of a stream FIFO — no L2 access is needed.
     bool streamHit = false;
-    if( !victimHit && streamLevel != nullptr ) {
+    if( streamLevel != nullptr ) {
         streamHit = streamLevel->access( address );
     }
 
-    if( !victimHit && !streamHit ) {
-        // Full miss: fetch the line from L2.
+    if( !streamHit ) {
         assert( nextLevel != nullptr );
         nextLevel->addressRequest( address );
 
-        // Start (or restart) a sequential stream from the next block so that
-        // future sequential accesses will be served from the stream buffer.
         if( streamLevel != nullptr ) {
             streamLevel->allocate_stream( address );
         }
     }
 
-    // On either a stream-buffer hit or a full miss, the line that was evicted
-    // from L1D to make room for the incoming block can be placed in the victim
-    // cache.  (A victim-cache hit already handles line swapping internally, so
-    // we only insert here when the victim cache itself missed.)
-    if( !victimHit && victimLevel != nullptr && hasVictim ) {
-        victimLevel->insert( evictedAddress );
-    }
-
-    // Fill the L1D slot with the requested line and mark it as MRU.
     cacheMem[ indexLRU + setField * assoc ].Tag = tagField;
     cacheMem[ indexLRU + setField * assoc ].Valid = true;
     updateLRU( setField, indexLRU );
@@ -867,13 +670,10 @@ void CreateCaches(void)
     }
 
     // Create the one and only memory
-    mem    = new memory();
-    vcache = nullptr;
-    sbuf   = nullptr;
+    mem  = new memory();
+    sbuf = nullptr;
 
     // Parse the configuration file and create the cache hierarchy.
-    // The third config line may optionally include a fourth value that
-    // specifies the number of victim-cache entries to allocate for L1D.
     int i = 0;
     while (!config.eof()){
         string line;
@@ -883,7 +683,7 @@ void CreateCaches(void)
         }
         replace( line.begin(), line.end(), ',', ' ' );
         istringstream parser(line);
-        int bsize, csize, assoc, vsize, sdepth, sstreams;
+        int bsize, csize, assoc, sdepth, sstreams;
         switch(i){
             case 0:
                 parser >> bsize >> csize >> assoc;
@@ -894,24 +694,15 @@ void CreateCaches(void)
                 icache = new l1icache(bsize, csize, assoc, llcache);
                 break;
             case 2:
-                vsize = 0; sdepth = 0; sstreams = 1;
+                sdepth = 0; sstreams = 1;
                 parser >> bsize >> csize >> assoc;
-                if( !(parser >> vsize)   ) vsize   = 0;
                 if( !(parser >> sdepth)  ) sdepth  = 0;
                 if( !(parser >> sstreams)) sstreams = 1;
 
-                if( vsize > 0 ) {
-                    // The victim cache uses the same block size as L1D and
-                    // contains vsize entries total.
-                    vcache = new victim_cache(bsize, bsize * vsize, llcache);
-                }
-                // Optionally attach a stream buffer (Jouppi §3).
-                // sdepth lines deep, sstreams independent sequential FIFOs.
                 if( sdepth > 0 ) {
                     sbuf = new stream_buf(bsize, sdepth, sstreams, llcache);
                 }
-                // Give L1D pointers to both optional hardware structures.
-                dcache = new l1dcache(bsize, csize, assoc, llcache, vcache, sbuf);
+                dcache = new l1dcache(bsize, csize, assoc, llcache, sbuf);
                 break;
             default:
                 break;
@@ -963,12 +754,6 @@ void PrintResults(void)
         << "\t\tDcache ways                 : " << dcache->getCacheAssoc() << endl
         << "\t\tDcache block size (bytes)   : " << dcache->getCacheBlockSize() << endl;
 
-    if( vcache != nullptr ) {
-        // Print the victim-cache capacity only when the optional buffer is
-        // enabled in the config file.
-        out << "\t\tVictim cache entries        : " << vcache->getCacheAssoc() << endl;
-    }
-
     if( sbuf != nullptr ) {
         out << "\t\tStream buf depth            : " << sbuf->getDepth() << endl;
         out << "\t\tStream buf streams          : " << sbuf->getNStreams() << endl;
@@ -989,12 +774,6 @@ void PrintResults(void)
     out << "\t\t I-Cache Miss: " << icache->getTotalMiss() << " out of " << icache->getRequest() << endl;
 
     out << "\t\t D-Cache Miss: " << dcache->getTotalMiss() << " out of " << dcache->getRequest() << endl;
-
-    if( vcache != nullptr ) {
-        // The assignment's effective miss metric is:
-        //   L1D misses - victim-cache hits
-        out << "\t\t Victim-Cache Hits: " << vcache->getHit() << " out of " << vcache->getRequest() << endl;
-    }
 
     if( sbuf != nullptr ) {
         // Stream-buffer hits rescued sequential misses before reaching L2.

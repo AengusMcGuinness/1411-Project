@@ -21,7 +21,7 @@ HMMER_CMD=( "$BENCH_DIR/hmmer_O3" "$BENCH_DIR/inputs/nph3.hmm" "$BENCH_DIR/input
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [assoc|victim|compare|stream|streams|2d|native|all]
+Usage: $(basename "$0") [assoc|stream|streams|2d|native|all]
 
 Environment overrides:
   CONFIG_BASE   Path to the course config-base file
@@ -90,12 +90,11 @@ check_paths() {
 
 make_config() {
   local assoc="$1"
-  local victim="$2"
-  local stream_depth="${3:-}"    # optional 5th field on L1D line
-  local stream_streams="${4:-}"  # optional 6th field on L1D line
-  local dest="$5"
+  local stream_depth="${2:-}"
+  local stream_streams="${3:-}"
+  local dest="$4"
 
-  awk -v assoc="$assoc" -v victim="$victim" \
+  awk -v assoc="$assoc" \
       -v stream_depth="$stream_depth" -v stream_streams="$stream_streams" '
     function trim(s) {
       gsub(/^[[:space:]]+/, "", s)
@@ -119,11 +118,6 @@ make_config() {
         }
 
         line = trim(fields[1]) ", " trim(fields[2]) ", " assoc
-        if (victim != "") {
-          line = line ", " victim
-        } else if (stream_depth != "") {
-          line = line ", 0"
-        }
         if (stream_depth != "") {
           line = line ", " stream_depth
           if (stream_streams != "") {
@@ -215,33 +209,30 @@ extract_out_of_metric() {
 
 run_case() {
   local assoc="$1"
-  local victim="$2"
-  local stream_depth="$3"    # "" or integer; passed through to make_config
-  local stream_streams="$4"  # "" or integer; passed through to make_config
-  local label="$5"
-  shift 5
+  local stream_depth="$2"
+  local stream_streams="$3"
+  local label="$4"
+  shift 4
 
   local -a bench=( "$@" )
-  local cfg out dmiss vhits sbhits l2req
+  local cfg out dmiss sbhits l2req
   cfg="$(mktemp "${TMPDIR:-/tmp}/stream_cfg.XXXXXX")"
   out="$(mktemp "${TMPDIR:-/tmp}/stream_out.XXXXXX")"
 
   log_step "$label"
-  make_config "$assoc" "$victim" "$stream_depth" "$stream_streams" "$cfg"
+  make_config "$assoc" "$stream_depth" "$stream_streams" "$cfg"
   run_pin "$cfg" "$out" "${bench[@]}"
 
   dmiss="$(extract_metric        "$out" "D-Cache Miss:")"
-  vhits="$(extract_metric        "$out" "Victim-Cache Hits:")"
   sbhits="$(extract_metric       "$out" "Stream-Buffer Hits:")"
   l2req="$(extract_out_of_metric "$out" "L2-Cache Miss:")"
   [[ -n "$dmiss"  ]] || dmiss=0
-  [[ -n "$vhits"  ]] || vhits=0
   [[ -n "$sbhits" ]] || sbhits=0
   [[ -n "$l2req"  ]] || l2req=0
 
   rm -f "$cfg" "$out"
-  # Fields: L1D_misses, victim_hits, stream_buf_hits, L2_total_requests
-  printf '%s,%s,%s,%s\n' "$dmiss" "$vhits" "$sbhits" "$l2req"
+  # Fields: L1D_misses, stream_buf_hits, L2_total_requests
+  printf '%s,%s,%s\n' "$dmiss" "$sbhits" "$l2req"
 }
 
 run_native_capture() {
@@ -376,8 +367,8 @@ run_assoc_sweep() {
   # ── Launch phase: 8 jobs, drained in batches of JOBS ─────────────────────
   _pool_pids=()
   for assoc in 1 2 4 8; do
-    pool_launch "$tmp_dir/lq_${assoc}" "$assoc" "" "" "" "assoc=$assoc libquantum" "${LIBQUANTUM_CMD[@]}"
-    pool_launch "$tmp_dir/hm_${assoc}" "$assoc" "" "" "" "assoc=$assoc hmmer"      "${HMMER_CMD[@]}"
+    pool_launch "$tmp_dir/lq_${assoc}" "$assoc" "" "" "assoc=$assoc libquantum" "${LIBQUANTUM_CMD[@]}"
+    pool_launch "$tmp_dir/hm_${assoc}" "$assoc" "" "" "assoc=$assoc hmmer"      "${HMMER_CMD[@]}"
   done
   pool_drain
 
@@ -412,128 +403,6 @@ run_assoc_sweep() {
   fi
 }
 
-run_victim_sweep_dm() {
-  local out_dir="$OUT_DIR/victim_dm"
-  mkdir -p "$out_dir"
-
-  local csv_file="$out_dir/victim_dm_misses.csv"
-  local tmp_dir
-  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/stream_victim.XXXXXX")"
-
-  log_section "Victim Sweep: Direct-Mapped L1D (JOBS=$JOBS)"
-
-  # ── Launch phase: 16 jobs, drained in batches of JOBS ────────────────────
-  _pool_pids=()
-  for entries in 1 2 3 4 5 6 7 8; do
-    pool_launch "$tmp_dir/lq_${entries}" 1 "$entries" "" "" "victim=$entries libquantum" "${LIBQUANTUM_CMD[@]}"
-    pool_launch "$tmp_dir/hm_${entries}" 1 "$entries" "" "" "victim=$entries hmmer"      "${HMMER_CMD[@]}"
-  done
-  pool_drain
-
-  # ── Assemble phase ────────────────────────────────────────────────────────
-  printf 'entries,libquantum,hmmer\n' > "$csv_file"
-  for entries in 1 2 3 4 5 6 7 8; do
-    local qd qv hd hv _r q h
-    IFS=, read -r qd qv _r < "$tmp_dir/lq_${entries}"; qd="${qd:-0}"; qv="${qv:-0}"
-    IFS=, read -r hd hv _r < "$tmp_dir/hm_${entries}"; hd="${hd:-0}"; hv="${hv:-0}"
-    q=$(( qd - qv ))
-    h=$(( hd - hv ))
-    printf '%s,%s,%s\n' "$entries" "$q" "$h" >> "$csv_file"
-    log_info "Victim entries $entries complete: libquantum=$q (L1D=$qd, VC hits=$qv), hmmer=$h (L1D=$hd, VC hits=$hv)"
-  done
-  rm -rf "$tmp_dir"
-
-  render_series_plot \
-    "$csv_file" \
-    "$out_dir/victim_dm_misses.png" \
-    "entries" \
-    "libquantum" \
-    "hmmer" \
-    "Victim Cache Sweep with Direct-Mapped L1D" \
-    "Victim Cache Entries" \
-    "L1D misses - VC hits" \
-    "libquantum" \
-    "hmmer" \
-    "" \
-    "" \
-    ""
-
-  echo "Direct-mapped victim sweep CSV: $csv_file"
-  if [[ "$GENERATE_PLOTS" == "1" ]]; then
-    echo "Direct-mapped victim sweep plot: $out_dir/victim_dm_misses.png"
-  fi
-}
-
-run_compare_sweep() {
-  local out_dir="$OUT_DIR/victim_compare"
-  mkdir -p "$out_dir"
-
-  local lib_csv="$out_dir/libquantum_dm_vs_8way.csv"
-  local hmmer_csv="$out_dir/hmmer_dm_vs_8way.csv"
-  local tmp_dir
-  tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/stream_compare.XXXXXX")"
-
-  log_section "Victim Sweep: Direct-Mapped vs 8-Way (JOBS=$JOBS)"
-  printf 'entries,direct_mapped,assoc8\n' > "$lib_csv"
-  printf 'entries,direct_mapped,assoc8\n' > "$hmmer_csv"
-
-  # ── Launch phase: 32 jobs (4 per entry × 8 entries), drained at JOBS ──────
-  _pool_pids=()
-  for entries in 1 2 3 4 5 6 7 8; do
-    pool_launch "$tmp_dir/lq_dm_${entries}" 1 "$entries" "" "" "compare dm victim=$entries libquantum"   "${LIBQUANTUM_CMD[@]}"
-    pool_launch "$tmp_dir/lq_8w_${entries}" 8 "$entries" "" "" "compare 8way victim=$entries libquantum" "${LIBQUANTUM_CMD[@]}"
-    pool_launch "$tmp_dir/hm_dm_${entries}" 1 "$entries" "" "" "compare dm victim=$entries hmmer"         "${HMMER_CMD[@]}"
-    pool_launch "$tmp_dir/hm_8w_${entries}" 8 "$entries" "" "" "compare 8way victim=$entries hmmer"       "${HMMER_CMD[@]}"
-  done
-  pool_drain
-
-  # ── Assemble phase ────────────────────────────────────────────────────────
-  for entries in 1 2 3 4 5 6 7 8; do
-    local qdm qd_hits q8 q8_hits hdm hd_hits h8 h8_hits _r
-    IFS=, read -r qdm qd_hits _r < "$tmp_dir/lq_dm_${entries}"; qdm="${qdm:-0}"; qd_hits="${qd_hits:-0}"
-    IFS=, read -r q8  q8_hits  _r < "$tmp_dir/lq_8w_${entries}"; q8="${q8:-0}";   q8_hits="${q8_hits:-0}"
-    IFS=, read -r hdm hd_hits  _r < "$tmp_dir/hm_dm_${entries}"; hdm="${hdm:-0}"; hd_hits="${hd_hits:-0}"
-    IFS=, read -r h8  h8_hits  _r < "$tmp_dir/hm_8w_${entries}"; h8="${h8:-0}";   h8_hits="${h8_hits:-0}"
-    printf '%s,%s,%s\n' "$entries" $(( qdm - qd_hits )) $(( q8 - q8_hits )) >> "$lib_csv"
-    printf '%s,%s,%s\n' "$entries" $(( hdm - hd_hits )) $(( h8 - h8_hits )) >> "$hmmer_csv"
-    log_info "Compare entries $entries: libquantum(dm=$(( qdm - qd_hits )), 8way=$(( q8 - q8_hits ))), hmmer(dm=$(( hdm - hd_hits )), 8way=$(( h8 - h8_hits )))"
-  done
-  rm -rf "$tmp_dir"
-
-  render_series_plot \
-    "$lib_csv" \
-    "$out_dir/libquantum_dm_vs_8way.png" \
-    "entries" \
-    "direct_mapped" \
-    "assoc8" \
-    "Victim Cache Benefits: libquantum" \
-    "Victim Cache Entries" \
-    "direct-mapped L1D" \
-    "8-way L1D" \
-    "" \
-    "" \
-    ""
-
-  render_series_plot \
-    "$hmmer_csv" \
-    "$out_dir/hmmer_dm_vs_8way.png" \
-    "entries" \
-    "direct_mapped" \
-    "assoc8" \
-    "Victim Cache Benefits: hmmer" \
-    "Victim Cache Entries" \
-    "direct-mapped L1D" \
-    "8-way L1D" \
-    "" \
-    "" \
-    ""
-
-  echo "Comparison CSVs: $lib_csv, $hmmer_csv"
-  if [[ "$GENERATE_PLOTS" == "1" ]]; then
-    echo "Comparison plots: $out_dir/libquantum_dm_vs_8way.png, $out_dir/hmmer_dm_vs_8way.png"
-  fi
-}
-
 run_stream_sweep() {
   local out_dir="$OUT_DIR/stream"
   mkdir -p "$out_dir"
@@ -553,17 +422,17 @@ run_stream_sweep() {
   # ── Launch phase: 10 jobs (2 per depth × 5 depths), drained at JOBS ──────
   _pool_pids=()
   for depth in 0 1 2 4 8; do
-    pool_launch "$tmp_dir/lq_${depth}" 1 "" "$depth" "1" "stream depth=$depth libquantum" "${LIBQUANTUM_CMD[@]}"
-    pool_launch "$tmp_dir/hm_${depth}" 1 "" "$depth" "1" "stream depth=$depth hmmer"      "${HMMER_CMD[@]}"
+    pool_launch "$tmp_dir/lq_${depth}" 1 "$depth" "1" "stream depth=$depth libquantum" "${LIBQUANTUM_CMD[@]}"
+    pool_launch "$tmp_dir/hm_${depth}" 1 "$depth" "1" "stream depth=$depth hmmer"      "${HMMER_CMD[@]}"
   done
   pool_drain
 
   # ── Assemble phase ────────────────────────────────────────────────────────
-  # run_case outputs: L1D_misses, victim_hits, sb_hits, L2_total_requests
+  # run_case outputs: L1D_misses, sb_hits, L2_total_requests
   for depth in 0 1 2 4 8; do
-    local qdm _v qsb ql2 hdm hsb hl2 q_eff h_eff
-    IFS=, read -r qdm _v qsb ql2 < "$tmp_dir/lq_${depth}"
-    IFS=, read -r hdm _v hsb hl2 < "$tmp_dir/hm_${depth}"
+    local qdm qsb ql2 hdm hsb hl2 q_eff h_eff
+    IFS=, read -r qdm qsb ql2 < "$tmp_dir/lq_${depth}"
+    IFS=, read -r hdm hsb hl2 < "$tmp_dir/hm_${depth}"
     qdm="${qdm:-0}"; qsb="${qsb:-0}"; ql2="${ql2:-0}"
     hdm="${hdm:-0}"; hsb="${hsb:-0}"; hl2="${hl2:-0}"
     q_eff=$(( qdm - qsb ))
@@ -614,15 +483,15 @@ run_streams_sweep() {
   # 10 jobs: 5 stream counts × 2 benchmarks
   _pool_pids=()
   for s in 1 2 4 8 16; do
-    pool_launch "$tmp_dir/lq_${s}" 1 "" 1 "$s" "streams=$s libquantum" "${LIBQUANTUM_CMD[@]}"
-    pool_launch "$tmp_dir/hm_${s}" 1 "" 1 "$s" "streams=$s hmmer"      "${HMMER_CMD[@]}"
+    pool_launch "$tmp_dir/lq_${s}" 1 1 "$s" "streams=$s libquantum" "${LIBQUANTUM_CMD[@]}"
+    pool_launch "$tmp_dir/hm_${s}" 1 1 "$s" "streams=$s hmmer"      "${HMMER_CMD[@]}"
   done
   pool_drain
 
   for s in 1 2 4 8 16; do
-    local qdm _v qsb ql2 hdm hsb hl2
-    IFS=, read -r qdm _v qsb ql2 < "$tmp_dir/lq_${s}"
-    IFS=, read -r hdm _v hsb hl2 < "$tmp_dir/hm_${s}"
+    local qdm qsb ql2 hdm hsb hl2
+    IFS=, read -r qdm qsb ql2 < "$tmp_dir/lq_${s}"
+    IFS=, read -r hdm hsb hl2 < "$tmp_dir/hm_${s}"
     qdm="${qdm:-0}"; qsb="${qsb:-0}"; ql2="${ql2:-0}"
     hdm="${hdm:-0}"; hsb="${hsb:-0}"; hl2="${hl2:-0}"
     printf '%s,%s,%s\n' "$s" "$(( qdm - qsb ))" "$(( hdm - hsb ))" >> "$eff_csv"
@@ -657,9 +526,9 @@ run_2d_sweep() {
   _pool_pids=()
   for depth in 0 1 2 4 8; do
     for s in 1 2 4 8; do
-      pool_launch "$tmp_dir/lq_d${depth}_s${s}" 1 "" "$depth" "$s" \
+      pool_launch "$tmp_dir/lq_d${depth}_s${s}" 1 "$depth" "$s" \
         "2d depth=$depth s=$s libquantum" "${LIBQUANTUM_CMD[@]}"
-      pool_launch "$tmp_dir/hm_d${depth}_s${s}" 1 "" "$depth" "$s" \
+      pool_launch "$tmp_dir/hm_d${depth}_s${s}" 1 "$depth" "$s" \
         "2d depth=$depth s=$s hmmer"      "${HMMER_CMD[@]}"
     done
   done
@@ -669,9 +538,9 @@ run_2d_sweep() {
     local lq_eff_row="$depth" hm_eff_row="$depth"
     local lq_l2_row="$depth"  hm_l2_row="$depth"
     for s in 1 2 4 8; do
-      local qdm _v qsb ql2 hdm hsb hl2
-      IFS=, read -r qdm _v qsb ql2 < "$tmp_dir/lq_d${depth}_s${s}"
-      IFS=, read -r hdm _v hsb hl2 < "$tmp_dir/hm_d${depth}_s${s}"
+      local qdm qsb ql2 hdm hsb hl2
+      IFS=, read -r qdm qsb ql2 < "$tmp_dir/lq_d${depth}_s${s}"
+      IFS=, read -r hdm hsb hl2 < "$tmp_dir/hm_d${depth}_s${s}"
       qdm="${qdm:-0}"; qsb="${qsb:-0}"; ql2="${ql2:-0}"
       hdm="${hdm:-0}"; hsb="${hsb:-0}"; hl2="${hl2:-0}"
       lq_eff_row="$lq_eff_row,$(( qdm - qsb ))"
@@ -699,7 +568,7 @@ run_native_mode() {
 main() {
   local mode="${1:-all}"
   case "$mode" in
-    assoc|victim|compare|stream|streams|2d|native|all)
+    assoc|stream|streams|2d|native|all)
       ;;
     -h|--help|help)
       usage
@@ -723,12 +592,6 @@ main() {
     assoc)
       run_assoc_sweep
       ;;
-    victim)
-      run_victim_sweep_dm
-      ;;
-    compare)
-      run_compare_sweep
-      ;;
     stream)
       run_stream_sweep
       ;;
@@ -743,8 +606,6 @@ main() {
       ;;
     all)
       run_assoc_sweep
-      run_victim_sweep_dm
-      run_compare_sweep
       run_stream_sweep
       run_streams_sweep
       run_2d_sweep
