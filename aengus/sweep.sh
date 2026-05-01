@@ -12,12 +12,14 @@ BENCH_DIR="${BENCH_DIR:-$ROOT_DIR/benchmarks}"
 NATIVE_ASSOC="${NATIVE_ASSOC:-8}"
 NATIVE_LIBQUANTUM="${NATIVE_LIBQUANTUM:-}"
 NATIVE_HMMER="${NATIVE_HMMER:-}"
+NATIVE_DEALII="${NATIVE_DEALII:-}"
 GENERATE_PLOTS="${GENERATE_PLOTS:-0}"
 # Max parallel Pin invocations. Defaults to the host's logical CPU count.
 JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)}"
 
 LIBQUANTUM_CMD=( "$BENCH_DIR/libquantum_O3" 400 25 )
 HMMER_CMD=( "$BENCH_DIR/hmmer_O3" "$BENCH_DIR/inputs/nph3.hmm" "$BENCH_DIR/inputs/swiss41" )
+DEALII_CMD=( "$BENCH_DIR/dealII_O3" )
 
 usage() {
   cat <<EOF
@@ -28,13 +30,14 @@ Environment overrides:
   PIN_ROOT      Pin installation root (uses \$PIN_ROOT/pin)
   PIN_BIN       Full path to the pin executable
   PIN_TOOL      Path to obj-intel64/stream.so
-  BENCH_DIR     Directory containing libquantum_O3 and hmmer_O3
+  BENCH_DIR     Directory containing libquantum_O3, hmmer_O3, and dealII_O3
   OUT_DIR       Output directory for CSVs, plots, and logs
   MAX_INST      Pin max_inst knob; set to 0 to omit it
   GENERATE_PLOTS Set to 1 to generate plots locally if Rscript is available
   NATIVE_ASSOC  X position for optional native miss markers on the assoc plot
   NATIVE_LIBQUANTUM  Optional native miss value to overlay on assoc plot
   NATIVE_HMMER       Optional native miss value to overlay on assoc plot
+  NATIVE_DEALII      Optional native miss value to overlay on assoc plot
   JOBS          Max parallel Pin invocations (default: logical CPU count)
 EOF
 }
@@ -78,7 +81,7 @@ check_paths() {
 
   [[ -e "$PIN_TOOL" ]] || die "Pin tool not found: $PIN_TOOL"
 
-  for bench in "${LIBQUANTUM_CMD[0]}" "${HMMER_CMD[0]}"; do
+  for bench in "${LIBQUANTUM_CMD[0]}" "${HMMER_CMD[0]}" "${DEALII_CMD[0]}"; do
     [[ -f "$bench" ]] || die "Benchmark not found: $bench"
     if [[ ! -x "$bench" ]]; then
       log_info "Fixing benchmark permissions: chmod +x $bench"
@@ -364,43 +367,28 @@ run_assoc_sweep() {
 
   log_section "Associativity Sweep (JOBS=$JOBS)"
 
-  # ── Launch phase: 8 jobs, drained in batches of JOBS ─────────────────────
+  # ── Launch phase: 12 jobs, drained in batches of JOBS ────────────────────
   _pool_pids=()
   for assoc in 1 2 4 8; do
     pool_launch "$tmp_dir/lq_${assoc}" "$assoc" "" "" "assoc=$assoc libquantum" "${LIBQUANTUM_CMD[@]}"
     pool_launch "$tmp_dir/hm_${assoc}" "$assoc" "" "" "assoc=$assoc hmmer"      "${HMMER_CMD[@]}"
+    pool_launch "$tmp_dir/dl_${assoc}" "$assoc" "" "" "assoc=$assoc dealII"     "${DEALII_CMD[@]}"
   done
   pool_drain
 
   # ── Assemble phase ────────────────────────────────────────────────────────
-  printf 'associativity,libquantum,hmmer\n' > "$csv_file"
+  printf 'associativity,libquantum,hmmer,dealII\n' > "$csv_file"
   for assoc in 1 2 4 8; do
-    local q h _r
+    local q h d _r
     IFS=, read -r q _r < "$tmp_dir/lq_${assoc}"; q="${q:-0}"
     IFS=, read -r h _r < "$tmp_dir/hm_${assoc}"; h="${h:-0}"
-    printf '%s,%s,%s\n' "$assoc" "$q" "$h" >> "$csv_file"
-    log_info "Associativity $assoc complete: libquantum=$q, hmmer=$h"
+    IFS=, read -r d _r < "$tmp_dir/dl_${assoc}"; d="${d:-0}"
+    printf '%s,%s,%s,%s\n' "$assoc" "$q" "$h" "$d" >> "$csv_file"
+    log_info "Associativity $assoc complete: libquantum=$q, hmmer=$h, dealII=$d"
   done
   rm -rf "$tmp_dir"
 
-  render_series_plot \
-    "$csv_file" \
-    "$out_dir/assoc_misses.png" \
-    "associativity" \
-    "libquantum" \
-    "hmmer" \
-    "L1 D-Cache Misses vs Associativity" \
-    "L1 D Cache Associativity" \
-    "libquantum" \
-    "hmmer" \
-    "${NATIVE_ASSOC}" \
-    "${NATIVE_LIBQUANTUM}" \
-    "${NATIVE_HMMER}"
-
   echo "Associativity sweep CSV: $csv_file"
-  if [[ "$GENERATE_PLOTS" == "1" ]]; then
-    echo "Associativity sweep plot: $out_dir/assoc_misses.png"
-  fi
 }
 
 run_stream_sweep() {
@@ -416,55 +404,38 @@ run_stream_sweep() {
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/stream_stream.XXXXXX")"
 
   log_section "Stream Buffer Sweep (direct-mapped L1D, 1 stream, JOBS=$JOBS)"
-  printf 'depth,libquantum,hmmer\n' > "$eff_csv"
-  printf 'depth,libquantum,hmmer\n' > "$l2_csv"
+  printf 'depth,libquantum,hmmer,dealII\n' > "$eff_csv"
+  printf 'depth,libquantum,hmmer,dealII\n' > "$l2_csv"
 
-  # ── Launch phase: 10 jobs (2 per depth × 5 depths), drained at JOBS ──────
+  # ── Launch phase: 15 jobs (3 per depth × 5 depths), drained at JOBS ──────
   _pool_pids=()
   for depth in 0 1 2 4 8; do
     pool_launch "$tmp_dir/lq_${depth}" 1 "$depth" "1" "stream depth=$depth libquantum" "${LIBQUANTUM_CMD[@]}"
     pool_launch "$tmp_dir/hm_${depth}" 1 "$depth" "1" "stream depth=$depth hmmer"      "${HMMER_CMD[@]}"
+    pool_launch "$tmp_dir/dl_${depth}" 1 "$depth" "1" "stream depth=$depth dealII"     "${DEALII_CMD[@]}"
   done
   pool_drain
 
   # ── Assemble phase ────────────────────────────────────────────────────────
   # run_case outputs: L1D_misses, sb_hits, L2_total_requests
   for depth in 0 1 2 4 8; do
-    local qdm qsb ql2 hdm hsb hl2 q_eff h_eff
+    local qdm qsb ql2 hdm hsb hl2 ddm dsb dl2 q_eff h_eff d_eff
     IFS=, read -r qdm qsb ql2 < "$tmp_dir/lq_${depth}"
     IFS=, read -r hdm hsb hl2 < "$tmp_dir/hm_${depth}"
+    IFS=, read -r ddm dsb dl2 < "$tmp_dir/dl_${depth}"
     qdm="${qdm:-0}"; qsb="${qsb:-0}"; ql2="${ql2:-0}"
     hdm="${hdm:-0}"; hsb="${hsb:-0}"; hl2="${hl2:-0}"
+    ddm="${ddm:-0}"; dsb="${dsb:-0}"; dl2="${dl2:-0}"
     q_eff=$(( qdm - qsb ))
     h_eff=$(( hdm - hsb ))
-    printf '%s,%s,%s\n' "$depth" "$q_eff" "$h_eff" >> "$eff_csv"
-    printf '%s,%s,%s\n' "$depth" "$ql2"   "$hl2"   >> "$l2_csv"
-    log_info "Stream depth $depth: libquantum eff=$q_eff L2req=$ql2 | hmmer eff=$h_eff L2req=$hl2"
+    d_eff=$(( ddm - dsb ))
+    printf '%s,%s,%s,%s\n' "$depth" "$q_eff" "$h_eff" "$d_eff" >> "$eff_csv"
+    printf '%s,%s,%s,%s\n' "$depth" "$ql2"   "$hl2"   "$dl2"   >> "$l2_csv"
+    log_info "Stream depth $depth: libquantum eff=$q_eff L2req=$ql2 | hmmer eff=$h_eff L2req=$hl2 | dealII eff=$d_eff L2req=$dl2"
   done
   rm -rf "$tmp_dir"
 
-  render_series_plot \
-    "$eff_csv" \
-    "$out_dir/stream_eff_misses.png" \
-    "depth" "libquantum" "hmmer" \
-    "Effective L1D Misses vs Stream Buffer Depth" \
-    "Stream Buffer Depth (lines prefetched)" \
-    "Effective L1D Misses (L1D - SB hits)" \
-    "libquantum" "hmmer" "" "" ""
-
-  render_series_plot \
-    "$l2_csv" \
-    "$out_dir/stream_l2_requests.png" \
-    "depth" "libquantum" "hmmer" \
-    "Total L2 Requests vs Stream Buffer Depth" \
-    "Stream Buffer Depth (lines prefetched)" \
-    "Total L2 Requests (demand + prefetch)" \
-    "libquantum" "hmmer" "" "" ""
-
   echo "Stream buffer CSVs: $eff_csv, $l2_csv"
-  if [[ "$GENERATE_PLOTS" == "1" ]]; then
-    echo "Stream buffer plots: $out_dir/stream_eff_misses.png, $out_dir/stream_l2_requests.png"
-  fi
 }
 
 run_streams_sweep() {
@@ -477,26 +448,29 @@ run_streams_sweep() {
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/stream_streams.XXXXXX")"
 
   log_section "Stream Count Sweep (depth=1, direct-mapped L1D, JOBS=$JOBS)"
-  printf 'streams,libquantum,hmmer\n' > "$eff_csv"
-  printf 'streams,libquantum,hmmer\n' > "$l2_csv"
+  printf 'streams,libquantum,hmmer,dealII\n' > "$eff_csv"
+  printf 'streams,libquantum,hmmer,dealII\n' > "$l2_csv"
 
-  # 10 jobs: 5 stream counts × 2 benchmarks
+  # 15 jobs: 5 stream counts × 3 benchmarks
   _pool_pids=()
   for s in 1 2 4 8 16; do
     pool_launch "$tmp_dir/lq_${s}" 1 1 "$s" "streams=$s libquantum" "${LIBQUANTUM_CMD[@]}"
     pool_launch "$tmp_dir/hm_${s}" 1 1 "$s" "streams=$s hmmer"      "${HMMER_CMD[@]}"
+    pool_launch "$tmp_dir/dl_${s}" 1 1 "$s" "streams=$s dealII"     "${DEALII_CMD[@]}"
   done
   pool_drain
 
   for s in 1 2 4 8 16; do
-    local qdm qsb ql2 hdm hsb hl2
+    local qdm qsb ql2 hdm hsb hl2 ddm dsb dl2
     IFS=, read -r qdm qsb ql2 < "$tmp_dir/lq_${s}"
     IFS=, read -r hdm hsb hl2 < "$tmp_dir/hm_${s}"
+    IFS=, read -r ddm dsb dl2 < "$tmp_dir/dl_${s}"
     qdm="${qdm:-0}"; qsb="${qsb:-0}"; ql2="${ql2:-0}"
     hdm="${hdm:-0}"; hsb="${hsb:-0}"; hl2="${hl2:-0}"
-    printf '%s,%s,%s\n' "$s" "$(( qdm - qsb ))" "$(( hdm - hsb ))" >> "$eff_csv"
-    printf '%s,%s,%s\n' "$s" "$ql2"              "$hl2"              >> "$l2_csv"
-    log_info "Streams $s: libquantum eff=$(( qdm - qsb )) L2req=$ql2 | hmmer eff=$(( hdm - hsb )) L2req=$hl2"
+    ddm="${ddm:-0}"; dsb="${dsb:-0}"; dl2="${dl2:-0}"
+    printf '%s,%s,%s,%s\n' "$s" "$(( qdm - qsb ))" "$(( hdm - hsb ))" "$(( ddm - dsb ))" >> "$eff_csv"
+    printf '%s,%s,%s,%s\n' "$s" "$ql2"              "$hl2"              "$dl2"              >> "$l2_csv"
+    log_info "Streams $s: libquantum eff=$(( qdm - qsb )) L2req=$ql2 | hmmer eff=$(( hdm - hsb )) L2req=$hl2 | dealII eff=$(( ddm - dsb )) L2req=$dl2"
   done
   rm -rf "$tmp_dir"
 
@@ -511,18 +485,22 @@ run_2d_sweep() {
   # Rows iterate over depth, so each cell is (depth, S) → eff misses.
   local lq_eff_csv="$out_dir/2d_libquantum_eff.csv"
   local hm_eff_csv="$out_dir/2d_hmmer_eff.csv"
+  local dl_eff_csv="$out_dir/2d_dealII_eff.csv"
   local lq_l2_csv="$out_dir/2d_libquantum_l2.csv"
   local hm_l2_csv="$out_dir/2d_hmmer_l2.csv"
+  local dl_l2_csv="$out_dir/2d_dealII_l2.csv"
   local tmp_dir
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/stream_2d.XXXXXX")"
 
   log_section "2D Depth x Streams Sweep (direct-mapped L1D, JOBS=$JOBS)"
   printf 'depth,s1,s2,s4,s8\n' > "$lq_eff_csv"
   printf 'depth,s1,s2,s4,s8\n' > "$hm_eff_csv"
+  printf 'depth,s1,s2,s4,s8\n' > "$dl_eff_csv"
   printf 'depth,s1,s2,s4,s8\n' > "$lq_l2_csv"
   printf 'depth,s1,s2,s4,s8\n' > "$hm_l2_csv"
+  printf 'depth,s1,s2,s4,s8\n' > "$dl_l2_csv"
 
-  # 40 jobs: 5 depths × 4 stream counts × 2 benchmarks
+  # 60 jobs: 5 depths × 4 stream counts × 3 benchmarks
   _pool_pids=()
   for depth in 0 1 2 4 8; do
     for s in 1 2 4 8; do
@@ -530,39 +508,48 @@ run_2d_sweep() {
         "2d depth=$depth s=$s libquantum" "${LIBQUANTUM_CMD[@]}"
       pool_launch "$tmp_dir/hm_d${depth}_s${s}" 1 "$depth" "$s" \
         "2d depth=$depth s=$s hmmer"      "${HMMER_CMD[@]}"
+      pool_launch "$tmp_dir/dl_d${depth}_s${s}" 1 "$depth" "$s" \
+        "2d depth=$depth s=$s dealII"     "${DEALII_CMD[@]}"
     done
   done
   pool_drain
 
   for depth in 0 1 2 4 8; do
-    local lq_eff_row="$depth" hm_eff_row="$depth"
-    local lq_l2_row="$depth"  hm_l2_row="$depth"
+    local lq_eff_row="$depth" hm_eff_row="$depth" dl_eff_row="$depth"
+    local lq_l2_row="$depth"  hm_l2_row="$depth"  dl_l2_row="$depth"
     for s in 1 2 4 8; do
-      local qdm qsb ql2 hdm hsb hl2
+      local qdm qsb ql2 hdm hsb hl2 ddm dsb dl2
       IFS=, read -r qdm qsb ql2 < "$tmp_dir/lq_d${depth}_s${s}"
       IFS=, read -r hdm hsb hl2 < "$tmp_dir/hm_d${depth}_s${s}"
+      IFS=, read -r ddm dsb dl2 < "$tmp_dir/dl_d${depth}_s${s}"
       qdm="${qdm:-0}"; qsb="${qsb:-0}"; ql2="${ql2:-0}"
       hdm="${hdm:-0}"; hsb="${hsb:-0}"; hl2="${hl2:-0}"
+      ddm="${ddm:-0}"; dsb="${dsb:-0}"; dl2="${dl2:-0}"
       lq_eff_row="$lq_eff_row,$(( qdm - qsb ))"
       hm_eff_row="$hm_eff_row,$(( hdm - hsb ))"
+      dl_eff_row="$dl_eff_row,$(( ddm - dsb ))"
       lq_l2_row="$lq_l2_row,$ql2"
       hm_l2_row="$hm_l2_row,$hl2"
-      log_info "2D depth=$depth s=$s: lq_eff=$(( qdm - qsb )) lq_l2=$ql2 | hm_eff=$(( hdm - hsb )) hm_l2=$hl2"
+      dl_l2_row="$dl_l2_row,$dl2"
+      log_info "2D depth=$depth s=$s: lq_eff=$(( qdm - qsb )) lq_l2=$ql2 | hm_eff=$(( hdm - hsb )) hm_l2=$hl2 | dl_eff=$(( ddm - dsb )) dl_l2=$dl2"
     done
     printf '%s\n' "$lq_eff_row" >> "$lq_eff_csv"
     printf '%s\n' "$hm_eff_row" >> "$hm_eff_csv"
+    printf '%s\n' "$dl_eff_row" >> "$dl_eff_csv"
     printf '%s\n' "$lq_l2_row"  >> "$lq_l2_csv"
     printf '%s\n' "$hm_l2_row"  >> "$hm_l2_csv"
+    printf '%s\n' "$dl_l2_row"  >> "$dl_l2_csv"
   done
   rm -rf "$tmp_dir"
 
-  echo "2D sweep CSVs: $lq_eff_csv, $hm_eff_csv, $lq_l2_csv, $hm_l2_csv"
+  echo "2D sweep CSVs: $lq_eff_csv, $hm_eff_csv, $dl_eff_csv, $lq_l2_csv, $hm_l2_csv, $dl_l2_csv"
 }
 
 run_native_mode() {
   log_section "Native LIKWID Captures"
   run_native_capture "libquantum" "${LIBQUANTUM_CMD[@]}"
   run_native_capture "hmmer" "${HMMER_CMD[@]}"
+  run_native_capture "dealII" "${DEALII_CMD[@]}"
 }
 
 main() {
