@@ -265,19 +265,29 @@ Depth & libquantum & hmmer & dealII
 \end{table}
 
 \paragraph{libquantum.} The stream buffer reduces effective misses from 121.2M
-to 2.8M at depth = 1---a \textbf{97.7\% reduction}. Crucially, increasing
-depth beyond 1 yields no further improvement: the effective miss count is
-essentially constant at 2.8M for $D \in \{1,2,4,8\}$. This saturation
-indicates that a single look-ahead block is sufficient to cover the entire
-latency of sequential accesses in this workload. The remaining 2.8M misses are
-compulsory cold misses on the first pass through each array that no amount of
-prefetching can eliminate.
+to 2.8M at depth = 1---a \textbf{97.7\% reduction}. Increasing depth beyond 1
+yields no further improvement: the effective miss count is essentially constant
+at 2.8M for $D \in \{1,2,4,8\}$. The remaining 2.8M misses are compulsory
+cold misses on the first pass through each array that no amount of prefetching
+can eliminate.
 
-L2 bandwidth grows only modestly with depth for \texttt{libquantum} (121M to
-144M at $D=8$, an 18.6\% increase). The reason is that nearly every prefetched
-line is consumed: when a stream-buffer hit occurs, one new tail line is fetched
-from L2, directly replacing what would otherwise have been a demand miss. The
-net bandwidth overhead is therefore small.
+This saturation is a direct consequence of the simulator being
+\emph{functional} rather than timing-based. The hit condition in
+\texttt{stream\_buf::access} checks only whether the demand address matches
+\texttt{streams[i].head}; there is no model of prefetch latency or memory
+access time. A prefetched line is treated as immediately available the moment
+it is requested, regardless of depth. As a result, depth has \emph{no effect}
+on hit rate in this simulator---it only controls how many prefetch requests are
+issued to L2 per allocation and per hit. In real hardware, depth would matter
+significantly: a deeper buffer keeps more lines simultaneously in flight from
+L2, providing a longer runway to hide L2 latency between successive sequential
+accesses. A depth-1 buffer in real hardware would stall whenever the
+inter-access time is shorter than the L2 round-trip latency.
+
+L2 bandwidth grows modestly with depth for \texttt{libquantum} (121M to 144M
+at $D=8$, an 18.6\% increase) because nearly every prefetched line is
+eventually consumed---the prefetch traffic replaces what would otherwise have
+been demand misses rather than adding net new traffic.
 
 \paragraph{hmmer.} Effective misses drop only 2.5\% at any depth, confirming
 that the access pattern is fundamentally non-sequential. The stream buffer
@@ -286,8 +296,7 @@ falls at the predicted head address. Meanwhile, L2 traffic grows at
 approximately $(D+1) \times 1091\text{M}$ requests---each of the $\sim$1089M
 per-miss stream allocations issues $D$ useless prefetch requests to L2. At
 $D=8$ this produces 9570M L2 requests, an \textbf{8.8$\times$} increase over
-the no-buffer baseline, with essentially no benefit. This is the canonical
-bandwidth-waste pathology of stream prefetchers applied to irregular workloads.
+the no-buffer baseline, with essentially no benefit. 
 
 \paragraph{dealII.} Effective misses fall by 2.4\% at $D=1$ and then plateau
 with slight noise. L2 requests grow roughly linearly with $D$, reaching
@@ -373,52 +382,52 @@ $N=1$) and modest improvements for \texttt{hmmer} and \texttt{dealII}.}
 \label{fig:streams}
 \end{figure}
 
-\subsection{2D Sweep: Depth and Streams Jointly}
+% \subsection{2D Sweep: Depth and Streams Jointly}
 
-The 2D sweep (Figure~\ref{fig:heatmaps}) reveals interaction effects between
-depth and stream count.
+% The 2D sweep (Figure~\ref{fig:heatmaps}) reveals interaction effects between
+% depth and stream count.
 
-For \texttt{libquantum} the heatmap is two-valued: the $D=0$ row is uniformly
-$\sim$121M (no buffer active), while every other cell is 2--3M regardless of
-the specific $(D, N)$ pair. This confirms that the minimum effective
-configuration is $D=1$, $N=1$; additional resources are wasted on this
-workload.
+% For \texttt{libquantum} the heatmap is two-valued: the $D=0$ row is uniformly
+% $\sim$121M (no buffer active), while every other cell is 2--3M regardless of
+% the specific $(D, N)$ pair. This confirms that the minimum effective
+% configuration is $D=1$, $N=1$; additional resources are wasted on this
+% workload.
 
-For \texttt{hmmer} the heatmap is nearly uniform across all $(D, N)$ pairs
-($\sim$1034--1088M), with the slight gradient corresponding to stream count
-rather than depth. No depth setting yields meaningful miss reduction.
+% For \texttt{hmmer} the heatmap is nearly uniform across all $(D, N)$ pairs
+% ($\sim$1034--1088M), with the slight gradient corresponding to stream count
+% rather than depth. No depth setting yields meaningful miss reduction.
 
-For \texttt{dealII} the heatmap shows that higher $N$ is consistently more
-valuable than higher $D$: the best cell is $(D=2, N=8)$ at 461.6M effective
-misses (5.8\% below baseline), while the worst is $(D=2, N=1)$ at 494.0M
-(slightly above the $D=1$ result due to run-to-run noise). This suggests that
-dealII runs more concurrent sequential streams than \texttt{libquantum}, but
-its streams are short enough that prefetching beyond one block ahead rarely
-helps.
+% For \texttt{dealII} the heatmap shows that higher $N$ is consistently more
+% valuable than higher $D$: the best cell is $(D=2, N=8)$ at 461.6M effective
+% misses (5.8\% below baseline), while the worst is $(D=2, N=1)$ at 494.0M
+% (slightly above the $D=1$ result due to run-to-run noise). This suggests that
+% dealII runs more concurrent sequential streams than \texttt{libquantum}, but
+% its streams are short enough that prefetching beyond one block ahead rarely
+% helps.
 
-\begin{figure}[H]
-\centering
-\begin{subfigure}[b]{0.32\linewidth}
-  \includegraphics[width=\linewidth]{2d_libquantum_eff.png}
-  \caption{\texttt{libquantum}}
-\end{subfigure}
-\hfill
-\begin{subfigure}[b]{0.32\linewidth}
-  \includegraphics[width=\linewidth]{2d_hmmer_eff.png}
-  \caption{\texttt{hmmer}}
-\end{subfigure}
-\hfill
-\begin{subfigure}[b]{0.32\linewidth}
-  \includegraphics[width=\linewidth]{2d_dealII_eff.png}
-  \caption{\texttt{dealII}}
-\end{subfigure}
-\caption{Effective L1D misses (millions) across all depth $\times$ stream
-combinations (direct-mapped L1D). Darker red = fewer misses (better). For
-\texttt{libquantum} any $D \geq 1$ saturates; for \texttt{hmmer} the buffer
-is ineffective regardless of configuration; for \texttt{dealII} higher $N$
-outweighs higher $D$.}
-\label{fig:heatmaps}
-\end{figure}
+% \begin{figure}[H]
+% \centering
+% \begin{subfigure}[b]{0.32\linewidth}
+%   \includegraphics[width=\linewidth]{2d_libquantum_eff.png}
+%   \caption{\texttt{libquantum}}
+% \end{subfigure}
+% \hfill
+% \begin{subfigure}[b]{0.32\linewidth}
+%   \includegraphics[width=\linewidth]{2d_hmmer_eff.png}
+%   \caption{\texttt{hmmer}}
+% \end{subfigure}
+% \hfill
+% \begin{subfigure}[b]{0.32\linewidth}
+%   \includegraphics[width=\linewidth]{2d_dealII_eff.png}
+%   \caption{\texttt{dealII}}
+% \end{subfigure}
+% \caption{Effective L1D misses (millions) across all depth $\times$ stream
+% combinations (direct-mapped L1D). Darker red = fewer misses (better). For
+% \texttt{libquantum} any $D \geq 1$ saturates; for \texttt{hmmer} the buffer
+% is ineffective regardless of configuration; for \texttt{dealII} higher $N$
+% outweighs higher $D$.}
+% \label{fig:heatmaps}
+% \end{figure}
 
 %─────────────────────────────────────────────────────────────────────────────
 \section{Discussion and Conclusions}
@@ -431,10 +440,6 @@ theoretical predictions for Jouppi-style stream buffers.
 reduction in effective L1D misses at the minimum depth demonstrates that the
 workload's access pattern---long sequential scans over large arrays exceeding
 the L1D capacity---is exactly what stream buffers are designed to exploit.
-Saturation at $D=1$ indicates that a single prefetch line is enough to hide
-the L2 latency for sequential accesses, an important design insight: deeper
-buffers waste hardware resources and L2 bandwidth without further benefit for
-this workload.
 
 \textbf{The stream buffer is counter-productive for hmmer.} Although effective
 misses drop by only 2.5\%, L2 bandwidth explodes nearly 9$\times$ at $D=8$.
@@ -457,20 +462,14 @@ patterns. Second, \emph{bandwidth} is a finite resource: prefetchers that
 generate many useless requests pollute the memory hierarchy even when they do
 not increase demand-miss latency directly.
 
-In a practical design, stream buffers are best paired with a prefetch throttle
-or confidence filter that monitors the hit rate and disables prefetching when
-the ratio of hits to allocations is low. For a workload like \texttt{hmmer},
-such a throttle would shut down the stream buffer almost immediately, avoiding
-the bandwidth explosion while adding negligible area overhead.
-
-\paragraph{Summary.}
-A Jouppi stream buffer with $D=1$ and $N=1$ achieves a 97.7\% L1D miss
-reduction for \texttt{libquantum} at negligible L2 bandwidth overhead, and is
-essentially ineffective for \texttt{hmmer} and \texttt{dealII}. Increasing
-depth or stream count beyond the minimum saturates benefit for sequential
-workloads while linearly amplifying bandwidth consumption for irregular ones.
-The associativity sweep confirms that conflict-miss-heavy workloads like
-\texttt{hmmer} are better served by associativity than by prefetching.
+% \paragraph{Summary.}
+% A Jouppi stream buffer with $D=1$ and $N=1$ achieves a 97.7\% L1D miss
+% reduction for \texttt{libquantum} at negligible L2 bandwidth overhead, and is
+% essentially ineffective for \texttt{hmmer} and \texttt{dealII}. Increasing
+% depth or stream count beyond the minimum saturates benefit for sequential
+% workloads while linearly amplifying bandwidth consumption for irregular ones.
+% The associativity sweep confirms that conflict-miss-heavy workloads like
+% \texttt{hmmer} are better served by associativity than by prefetching.
 
 \begin{thebibliography}{1}
 \bibitem{jouppi1990improving}
@@ -482,3 +481,8 @@ Computer Architecture (ISCA)}, pages 364--373, 1990.
 \end{thebibliography}
 
 \end{document}
+
+%%% Local Variables:
+%%% mode: LaTeX
+%%% TeX-master: t
+%%% End:
