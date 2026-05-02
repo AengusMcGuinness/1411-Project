@@ -11,9 +11,10 @@ ali/pintool/obj-*/
 # Logs (always transient)
 logs/
 
-# dealII run-time output artifacts
+# dealII run-time output artifacts (also dropped into ./artifacts/ to keep root clean)
 *.gmv
 *.eps
+/artifacts/
 
 # NFS lockfiles
 .nfs*
