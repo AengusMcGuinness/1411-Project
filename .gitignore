@@ -22,3 +22,6 @@ logs/
 # Transient root-level smoke outputs (real deliverables live in ali/results/)
 /smoke_test.csv
 /smoke_verify.csv
+
+# Course homework — kept locally for convenience but not part of this project
+/cs146-psets/
