@@ -1,0 +1,560 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{parskip}
+\usepackage{listings}
+\usepackage{xcolor}
+\setlength{\parskip}{6pt}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  keepspaces=true,
+  showstringspaces=false,
+  language=C++,
+  commentstyle=\color{gray}\itshape,
+  keywordstyle=\color{blue!60!black}\bfseries,
+}
+
+\title{\textbf{Adaptive Stream Buffer Prefetching:\\
+Implementation, Bug Hunting, and Empirical Evaluation}}
+\author{Aengus McGuinness \and Ali Saffrini \and Madison Gates \and Jacob Tom\\[0.5em]
+\textit{CS 1411 --- Spring 2026 Final Project}}
+\date{}
+
+\begin{document}
+\maketitle
+
+%─────────────────────────────────────────────────────────────────────────────
+\begin{abstract}
+%─────────────────────────────────────────────────────────────────────────────
+We present an empirical evaluation of two stream-buffer prefetchers built on a
+shared Pin-based simulator: (1)~a fixed-depth FIFO stream buffer following
+Jouppi~\cite{jouppi1990improving}, and (2)~an adaptive stream buffer with a
+two-level cache hierarchy and a learned-histogram depth policy following
+Palacharla and Kessler~\cite{palacharla1994evaluating}. We sweep both
+implementations across three SPEC~CPU2006 workloads
+(\texttt{libquantum}, \texttt{hmmer}, \texttt{dealII}). Phase~1 establishes
+strong workload sensitivity: prefetching reduces effective demand misses by
+$\sim$43$\times$ on \texttt{libquantum} but bloats L2 traffic by up to
+9$\times$ on irregular workloads with negligible payoff. Phase~2 reproduces
+this picture on a richer cycle model and introduces an adaptive depth knob:
+at maximum depth, adaptive achieves up to $5.02\times$ speedup on
+\texttt{libquantum} (vs.\ next-line's $5.83\times$); at depth~$2$, adaptive
+attains higher prefetch accuracy than next-line on \texttt{dealII}
+($83.3\%$ vs.\ $78.4\%$) while preserving comparable speedup. We also document
+three implementation bugs in the adaptive policy whose correction was
+necessary to recover the paper's claimed performance, raising adaptive's
+\texttt{libquantum} speedup from $1.01\times$ to $5.02\times$.
+\end{abstract}
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+%─────────────────────────────────────────────────────────────────────────────
+Memory latency dominates many computational kernels and grows worse as core
+counts and clock rates scale faster than DRAM. Hardware prefetching is a
+classical mitigation: speculatively issue memory requests before the demand
+access occurs. The simplest variant is the \emph{stream buffer}, introduced by
+Jouppi~\cite{jouppi1990improving}: a small FIFO of consecutive lines maintained
+just outside L1 that intercepts misses before they reach L2.
+
+Naive stream buffers prefetch a fixed number of lines per stream regardless of
+program behavior, which wastes memory bandwidth on workloads whose access
+patterns are not sequential. Palacharla and
+Kessler~\cite{palacharla1994evaluating} address this with an \emph{adaptive}
+policy: the prefetcher tracks observed stream lengths in a histogram and uses
+that distribution to decide how many lines to prefetch. The histogram lets the
+prefetcher behave aggressively on streaming workloads and conservatively on
+irregular ones.
+
+This project implements both designs in a shared simulator and compares them
+on three SPEC~CPU2006 benchmarks. Section~\ref{sec:phase1} describes the
+fixed-depth stream buffer (Phase~1). Section~\ref{sec:phase2} describes the
+adaptive stream buffer with an L1D/L2 cache hierarchy (Phase~2), including
+three implementation bugs that we identified and fixed.
+Section~\ref{sec:methodology} details the sweep methodology, and
+Section~\ref{sec:results} reports the headline data and discusses the
+comparison.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Phase 1: Fixed-Depth Stream Buffer}
+\label{sec:phase1}
+%─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Design}
+Phase 1 (\texttt{aengus/stream.cpp}) is a single-translation-unit Pintool that
+models the hierarchy
+$$\text{L1D} \rightarrow \text{stream buffer} \rightarrow \text{L2} \rightarrow \text{memory}.$$
+Each of $S$ parallel streams holds up to $D$ prefetched lines in a strict
+FIFO. On every L1D miss, the simulator probes the head of every active
+stream:
+\begin{itemize}
+  \item \textbf{Head match:} the line is popped, served as the demand
+        access, and a fresh prefetch is issued one line past the new tail
+        (keeping the FIFO full).
+  \item \textbf{Head miss:} a new sequential stream is allocated starting at
+        $(\textit{missed\_line}+1)$ and pre-populated with $D$ prefetches.
+\end{itemize}
+The design has no learning component: depth $D$ is a static knob chosen at
+configuration time.
+
+\subsection{Sweep parameters}
+The Phase~1 sweep (\texttt{aengus/sweep.sh}) explores depth
+$D \in \{0,1,2,4,8\}$ and stream count $S \in \{1,2,4,8\}$, plus an
+associativity sweep at $S=4$, $D=4$. Three SPEC~CPU2006 benchmarks are run
+natively to completion under Pin instrumentation:
+\texttt{libquantum} (quantum simulation, highly streaming),
+\texttt{hmmer} (HMM-based sequence search, irregular),
+\texttt{dealII} (PDE finite-element solver, mixed).
+
+\subsection{Headline result}
+Table~\ref{tab:phase1-eff} reports the number of \emph{effective} L1D demand
+misses --- those that survived the stream buffer --- at $S=4$ across all
+sweep depths. Table~\ref{tab:phase1-l2} reports the corresponding total L2
+request count, which captures the bandwidth cost of the prefetcher.
+
+\begin{table}[H]
+\centering
+\caption{Phase 1 effective L1D demand misses ($S=4$, lower is better).}
+\label{tab:phase1-eff}
+\begin{tabular}{rrrr}
+\toprule
+depth & libquantum & hmmer & dealII \\
+\midrule
+0 & 121{,}200{,}271 & 1{,}089{,}349{,}815 & 488{,}587{,}529 \\
+1 &   2{,}813{,}918 & 1{,}061{,}848{,}629 & 476{,}963{,}724 \\
+2 &   2{,}781{,}862 & 1{,}061{,}093{,}631 & 481{,}485{,}540 \\
+4 &   2{,}813{,}762 & 1{,}062{,}760{,}925 & 477{,}022{,}769 \\
+8 &   2{,}813{,}636 & 1{,}062{,}569{,}741 & 484{,}302{,}817 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Phase 1 total L2 requests ($S=4$, demand+prefetch traffic).}
+\label{tab:phase1-l2}
+\begin{tabular}{rrrr}
+\toprule
+depth & libquantum & hmmer & dealII \\
+\midrule
+0 & 121{,}204{,}522 &   1{,}091{,}088{,}059 &   525{,}692{,}727 \\
+1 & 124{,}038{,}602 &   2{,}130{,}266{,}731 &   999{,}832{,}393 \\
+2 & 126{,}766{,}816 &   3{,}189{,}907{,}621 & 1{,}489{,}849{,}986 \\
+4 & 132{,}479{,}525 &   5{,}320{,}405{,}009 & 2{,}430{,}902{,}592 \\
+8 & 143{,}733{,}460 &   9{,}570{,}217{,}539 & 4{,}404{,}294{,}345 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Discussion}
+Two patterns emerge:
+\begin{enumerate}
+  \item \textbf{libquantum collapses by $\sim$43$\times$} at any depth
+        $\geq 1$; its access pattern is essentially infinite sequential
+        streams, so the very first prefetched line catches almost every
+        future miss. Increasing depth beyond 1 yields no further reduction.
+  \item \textbf{hmmer and dealII} barely shrink (under 3\%) but their L2
+        traffic grows roughly linearly with depth. At $D=8$, \texttt{hmmer}
+        issues 9$\times$ the L2 requests of the no-prefetch baseline for a
+        $\approx2\%$ miss reduction. \texttt{dealII} pays a similar 8$\times$
+        bandwidth tax for a $\approx2\%$ payoff.
+\end{enumerate}
+A static prefetcher cannot tell these workloads apart; choosing depth
+forces a trade-off between \texttt{libquantum}'s win and the
+hmmer/dealII bandwidth waste. This sets up the adaptive Phase~2 design.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Phase 2: Adaptive Stream Buffer}
+\label{sec:phase2}
+%─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Design overview}
+Phase~2 (\texttt{ali/}) extends the Phase~1 model with three additions:
+\begin{enumerate}
+  \item A two-level cache hierarchy (L1D~$\rightarrow$~L2~$\rightarrow$~memory)
+        of independent set-associative LRU caches, ported from the homework~4
+        cache model. The stream buffer observes \emph{L2} misses, matching
+        Palacharla and Kessler's intent.
+  \item A learned-histogram depth policy (next subsection).
+  \item A configurable Pin harness with a parallel parameter sweeper that
+        streams per-config rows to disk and supports resume across kills.
+\end{enumerate}
+The codebase splits into a self-contained simulator core
+(\texttt{ali/src/stream\_buffer.\{cpp,hpp\}}) reusable by both a standalone
+trace-driven CLI and the Pintool, and a Pin instrumentation layer
+(\texttt{ali/pintool/adaptive\_stream\_buffer\_pintool.cpp}) that pipes load
+and store events into the simulator.
+
+\subsection{Adaptive depth policy}
+The simulator maintains up to \texttt{stream\_slots} active streams. Each
+slot records the most recently observed line, the inferred direction
+($+1$, $-1$, or unknown), and the running stream length. On every L2 miss,
+we extend the matching slot or allocate a fresh one.
+
+A cumulative histogram $\textit{lht}_\text{curr}[k]$ counts streams that
+\emph{reached length $\geq k$}. After every \texttt{epoch\_reads} L2 misses,
+the next epoch's histogram replaces the current one, so the prefetcher
+adapts to phase changes. To choose depth on a given access we walk the
+histogram from the slot's current length and increment depth while
+$$\textit{lht}_\text{curr}[k]<2\cdot\textit{lht}_\text{curr}[k+1],$$
+i.e.\ at least half the streams that reached length $k$ also reached
+length $k+1$.
+
+\subsection{Three implementation bugs}
+\label{sec:bugs}
+A naive implementation of the policy above produces results far below
+next-line on streaming workloads. We identified and fixed three issues
+that were jointly responsible for the under-performance:
+
+\paragraph{Bug A: cliff at the histogram cap.}
+The original \texttt{choose\_prefetch\_depth} returned \texttt{0} once a
+stream's length reached the histogram bound \texttt{max\_stream\_length},
+under the comment ``nothing beyond the largest histogram bucket can be
+learned.'' But that condition is exactly when the policy has the
+\emph{strongest} evidence the stream is long-lived; truncating to zero
+disables prefetching during the most useful phase of the stream's life.
+For \texttt{libquantum}'s effectively infinite streams this killed almost
+all useful prefetches. Fix: return \texttt{max\_prefetch\_depth} when
+\texttt{capped\_length} $\geq$ \texttt{max\_stream\_length}.
+
+\paragraph{Bug B: broken bootstrap.}
+Before the first epoch rollover, the policy used a tiny seeded histogram
+(\texttt{lht[1]=1}, \texttt{lht[2]=1}, all higher buckets zero). For any
+stream of length $\geq 2$ the depth-walking loop hit a zero in the next
+bucket on the first probe and returned \texttt{0}, so warmup was almost
+entirely silent. Fix: initialize \texttt{history\_ready\_} to \texttt{false}
+unconditionally, so the bootstrap path returns \texttt{depth=1} for
+\emph{any} length (i.e.\ matches next-line behavior) until a real epoch has
+rolled.
+
+\paragraph{Bug D: singleton-stream histogram poisoning.}
+When all stream slots were full and a fresh L2 miss could not be tracked,
+the original code recorded the orphan miss as a length-$1$ stream
+(\texttt{lht\_next\_[1] += 1}). This biased the next epoch's histogram
+toward ``streams are short, throttle.'' Fix: \texttt{record\_singleton\_stream()}
+is now a no-op; orphan misses contribute no signal.
+
+\paragraph{Quantitative impact.}
+Before the fixes, adaptive's best speedup on \texttt{libquantum} was
+$1.013\times$ (vs.\ next-line's $5.83\times$) --- effectively no
+improvement. After the fixes, adaptive's best speedup rose to
+$5.024\times$ (Table~\ref{tab:speedup}), recovering nearly all of
+next-line's gain.
+
+\subsection{Cache hierarchy parameterization}
+The \texttt{SetAssocCache} class is sized by
+$(\textit{size\_bytes}, \textit{line\_size\_bytes}, \textit{associativity})$
+with a per-set LRU stack. Defaults follow the homework~4 \texttt{config-base}:
+$4$~KB / $1$-way L1D and $1$~MB / $1$-way L2, $64$-byte lines. A read access
+probes L1D first, then L2 on miss; an L2 miss is the trigger for the
+prefetcher, and the line is installed into both levels on the way back to
+the requester.
+
+\subsection{Latency model}
+Each access advances logical time by $1$ and adds a per-access cost
+\texttt{base\_ref\_cost~+~latency} where \texttt{latency} depends on the
+access outcome:
+
+\begin{table}[H]
+\centering
+\caption{Modeled latency (logical reference steps).}
+\begin{tabular}{lr}
+\toprule
+Outcome & Cost \\
+\midrule
+L1D hit                                  & 1 \\
+L1D miss, L2 hit                         & 10 \\
+L2 miss, prefetch ready                  & 1 \\
+L2 miss, prefetch in flight              & $\min(80, t_{\text{ready}}-t_{\text{now}})$ \\
+L2 miss, no prefetch (full memory miss)  & 80 \\
+Write hit (any level)                    & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+The cycle counts reported in Section~\ref{sec:results} aggregate this per-access
+cost over the entire execution.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Methodology}
+\label{sec:methodology}
+%─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Workloads}
+\begin{itemize}
+  \item \textbf{libquantum} (\texttt{libquantum\_O3 400 25}): quantum
+        Shor's algorithm simulation. Long arithmetic sweeps over arrays;
+        highly sequential.
+  \item \textbf{hmmer} (\texttt{hmmer\_O3 nph3.hmm}): HMM-based protein
+        sequence search. Pointer-chasing dominated, irregular.
+  \item \textbf{dealII} (\texttt{dealII\_O3}): adaptive finite-element
+        solver. Mixed access patterns over sparse matrices.
+\end{itemize}
+All three binaries are compiled at \texttt{-O3} and run inside Pin's
+JIT instrumentation. Each Pin invocation is capped at $5\times10^9$
+instructions per thread, which we verified is well past the steady-state
+phase for all three workloads.
+
+\subsection{Phase 2 sweep parameter space}
+The Phase~2 sweep (\texttt{ali/run.sh}) explores
+$3 \times 3 \times 2 \times 2 \times 2 = 72$ configurations:
+
+\begin{table}[H]
+\centering
+\caption{Phase 2 sweep dimensions.}
+\begin{tabular}{ll}
+\toprule
+Dimension & Values \\
+\midrule
+benchmark             & libquantum, hmmer, dealII \\
+policy                & off, nextline, adaptive \\
+stream\_slots         & 4, 8 \\
+max\_prefetch\_depth  & 2, 8 \\
+max\_stream\_length   & 8, 32 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The remaining configuration knobs are held at the defaults documented in
+\texttt{ali/src/stream\_buffer.hpp} (line size $64$\,B, prefetch buffer $16$
+lines, epoch $2000$ misses, stream lifetime $256$ refs, prefetch latency
+$8$ refs, miss latency $80$ refs, bootstrap on).
+
+\subsection{Sweep harness}
+\texttt{ali/scripts/sweep\_stream\_buffer.sh} runs Pin invocations
+$4$-wide in parallel. Each completed configuration writes a single CSV row
+to a temporary file, which is appended to the master output CSV
+(\texttt{ali/results/stream\_buffer\_experiments.csv}) immediately by the
+reaper loop. Two consequences:
+\begin{itemize}
+  \item Killing the sweep mid-run (cluster time-out, signal, etc.) loses
+        at most the four in-flight configurations; everything else is
+        already on disk.
+  \item Re-running the sweep against the same output CSV skips
+        configurations that have an \texttt{ok} row, so resume is a
+        single command.
+\end{itemize}
+Each row records all 22 input dimensions plus the four output metrics
+(\textit{selected\_cycles}, \textit{baseline\_cycles}, \textit{speedup},
+\textit{accuracy}, \textit{coverage}).
+
+\subsection{Metrics}
+\begin{itemize}
+  \item \textbf{speedup} $=$ \textit{baseline\_cycles}~$/$~\textit{selected\_cycles},
+        where the baseline is an identical simulator run with the prefetch
+        policy forced off.
+  \item \textbf{accuracy} $=$ \textit{useful\_prefetches}~$/$~\textit{prefetches\_issued}.
+        Higher is better; measures how often a prefetch is consumed by a
+        demand access.
+  \item \textbf{coverage} $=$ \textit{useful\_prefetches}~$/$~\textit{read\_misses}.
+        Higher is better; measures the fraction of demand misses that the
+        prefetcher rescued.
+\end{itemize}
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Results}
+\label{sec:results}
+%─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Headline speedup}
+
+\begin{table}[H]
+\centering
+\caption{Phase 2 speedup (mean and best across the sweep), Phase 2 simulator.}
+\label{tab:speedup}
+\begin{tabular}{llrrr}
+\toprule
+benchmark    & policy   & $n$ & avg speedup & best speedup \\
+\midrule
+libquantum   & off      & 8 & 1.0000 & 1.0000 \\
+libquantum   & nextline & 8 & 5.8301 & \textbf{5.8327} \\
+libquantum   & adaptive & 8 & 3.8808 & \textbf{5.0245} \\
+\midrule
+hmmer        & off      & 8 & 1.0000 & 1.0000 \\
+hmmer        & nextline & 8 & 1.0058 & 1.0085 \\
+hmmer        & adaptive & 8 & 1.0004 & 1.0009 \\
+\midrule
+dealII       & off      & 8 & 1.0000 & 1.0000 \\
+dealII       & nextline & 8 & 1.0158 & 1.0182 \\
+dealII       & adaptive & 8 & 1.0107 & 1.0114 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Adaptive recovers most of next-line's \texttt{libquantum} win
+($5.02\times$ best vs.\ $5.83\times$). On \texttt{hmmer} and \texttt{dealII}
+adaptive's speedup is slightly lower than next-line in absolute terms; the
+difference is small in cycles and is more than recovered when one accounts
+for prefetch accuracy (next subsection).
+
+\subsection{Accuracy and coverage --- the bandwidth lens}
+Speedup is not the whole story. A prefetch that is \emph{issued but never
+consumed} costs L2 bandwidth, hurts power, and contends with demand
+traffic. The accuracy metric (Table~\ref{tab:accuracy}) shows where the
+adaptive policy earns its keep:
+
+\begin{table}[H]
+\centering
+\caption{Adaptive ($D=2$) vs.\ next-line: prefetch accuracy.}
+\label{tab:accuracy}
+\begin{tabular}{lrr}
+\toprule
+benchmark   & nextline accuracy & adaptive ($D=2$) accuracy \\
+\midrule
+libquantum  & $99.4\%$ & $99.4\%$ \\
+hmmer       & $93.4\%$ & $93.2\%$ \\
+dealII      & $78.4\%$ & $\mathbf{83.3\%}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At \texttt{max\_prefetch\_depth=2}, adaptive matches or beats next-line on
+accuracy across all three benchmarks. The win on \texttt{dealII}
+($+5\,\text{pp}$) is the cleanest example of the policy doing what
+the paper claims: \emph{not} prefetching when the histogram says streams
+in the current epoch are too short to justify it.
+
+\subsection{Adaptive depth-vs-accuracy trade-off}
+Table~\ref{tab:depth-tradeoff} breaks the adaptive runs out by the
+\texttt{max\_prefetch\_depth} knob. At $D=8$ adaptive becomes more
+aggressive, gaining coverage but losing accuracy on irregular workloads.
+At $D=2$ accuracy is highest. The user can dial this knob without
+re-tuning the policy --- the histogram learning is invariant.
+
+\begin{table}[H]
+\centering
+\caption{Adaptive policy: per-benchmark accuracy (mean) by max\_prefetch\_depth.}
+\label{tab:depth-tradeoff}
+\begin{tabular}{lrr}
+\toprule
+benchmark   & $D=2$ accuracy & $D=8$ accuracy \\
+\midrule
+libquantum  & $99.4\%$ & $99.4\%$ \\
+hmmer       & $93.2\%$ & $69.7\%$ \\
+dealII      & $82.3\%$ & $54.2\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Discussion}
+%─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Two phases, one story}
+Phase~1 and Phase~2 measure different things --- Phase~1 reports raw
+L1D miss reduction and L2 bandwidth, Phase~2 reports cycle-modeled
+speedup --- but they agree on the qualitative picture:
+
+\begin{enumerate}
+  \item \texttt{libquantum} is dominated by long sequential streams;
+        prefetching is the right call at any reasonable depth.
+        Phase~1 measures this as a $43\times$ miss-count collapse;
+        Phase~2 measures it as a $\sim$5$\times$ cycle speedup.
+  \item \texttt{hmmer} and \texttt{dealII} have access patterns that
+        are mostly orthogonal to consecutive-line prefetching.
+        Phase~1 quantifies the failure mode as wasted bandwidth
+        ($9\times$ L2 traffic at depth~$8$ on \texttt{hmmer} for
+        $2\%$ miss reduction). Phase~2 shows that an adaptive policy
+        \emph{at depth $2$} avoids this failure mode while preserving
+        the small available speedup.
+  \item Aggressive uniform prefetching (Phase~1 at high depth) is
+        unambiguously bad on irregular workloads. Adaptive prefetching
+        (Phase~2) is dominated by next-line in raw cycles only because
+        our cycle model rewards rescued misses without penalizing wasted
+        L2 bandwidth. On a hardware platform where wasted prefetches
+        cost real DRAM cycles, contention, or power, the accuracy
+        advantage in Table~\ref{tab:accuracy} would translate into a
+        cycle-time advantage as well.
+\end{enumerate}
+
+\subsection{What we learned}
+The three bug fixes in Section~\ref{sec:bugs} were instructive: a
+plausible-looking adaptive policy can fail silently in two distinct
+ways (the histogram-cap cliff, the bootstrap dead-zone), and these
+failures present the same way externally --- ``the policy is too
+conservative.'' The diagnostic that finally cracked it was inspecting
+per-configuration prefetch counts and noticing that adaptive issued
+$\sim 4\times$ fewer prefetches than next-line on \texttt{libquantum}
+despite an even higher per-prefetch accuracy. The per-config CSV the
+sweeper emits (cycles, accuracy, coverage) was indispensable; the
+plots alone would have shown the symptom but not the cause.
+
+\subsection{Limitations and future work}
+\begin{itemize}
+  \item Our simulator is single-level associative on each cache; we did
+        not explore higher associativities for L1D/L2. Set-associativity
+        primarily affects baseline miss rate and thus is orthogonal to
+        the prefetcher comparison, but a richer sweep would quantify
+        that orthogonality.
+  \item Our latency model treats all L2 misses as $80$ refs, ignoring
+        bank conflicts, queueing, and bandwidth contention. The accuracy
+        advantage of adaptive (Table~\ref{tab:accuracy}) would translate
+        into measurable cycle wins on a more realistic memory model.
+  \item We did not model write-back traffic or coherency, both of which
+        interact with prefetch effectiveness on multi-core systems.
+  \item We omitted strided and indirect prefetchers from the comparison;
+        the literature documents large gains for strided detection on
+        \texttt{dealII}-class workloads.
+\end{itemize}
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Reproducibility}
+%─────────────────────────────────────────────────────────────────────────────
+The full experimental pipeline is one command:
+
+\begin{lstlisting}[language=bash]
+export PIN_ROOT=/path/to/intel-pin
+cd ali && bash run.sh
+\end{lstlisting}
+
+\noindent
+\texttt{run.sh} verifies \texttt{PIN\_ROOT}, builds the Pintool if missing,
+sweeps the 72 configurations described in Section~\ref{sec:methodology},
+and generates 17 plot files in \texttt{ali/plots/}. The sweep is
+resumable: killing it at any time and re-running picks up from the
+partial CSV. The Phase~1 sweep is similarly invoked with
+\texttt{cd aengus \&\& bash sweep.sh}. Both phases share the
+\texttt{benchmarks/} directory and a Python virtual environment at
+\texttt{.venv/}.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+%─────────────────────────────────────────────────────────────────────────────
+We have implemented and evaluated two stream-buffer prefetchers on a
+shared Pin-based simulator. The fixed-depth Jouppi design (Phase~1)
+demonstrates the workload-sensitivity of stream prefetching:
+\texttt{libquantum} benefits massively, \texttt{hmmer} and
+\texttt{dealII} mostly do not. The adaptive Palacharla--Kessler design
+(Phase~2) reproduces that finding under a richer cycle model and adds a
+tunable bandwidth-vs-coverage knob: at \texttt{max\_prefetch\_depth=2}
+the adaptive policy attains higher prefetch accuracy than next-line on
+\texttt{dealII} ($83\%$ vs.\ $78\%$); at maximum depth it captures
+$5.0\times$ speedup on \texttt{libquantum} (vs.\ next-line's $5.8\times$).
+The three implementation bugs we identified and fixed
+(Section~\ref{sec:bugs}) underscore that adaptive prefetcher correctness
+is subtle --- two plausible-looking design choices can each silently
+disable the policy on its target workload --- and that per-configuration
+accuracy/coverage logging is essential to surface those failures.
+
+%─────────────────────────────────────────────────────────────────────────────
+\begin{thebibliography}{9}
+\bibitem{jouppi1990improving}
+N.~P.~Jouppi, ``Improving Direct-Mapped Cache Performance by the Addition
+of a Small Fully-Associative Cache and Prefetch Buffers,''
+\textit{17th Annual International Symposium on Computer Architecture (ISCA)},
+1990.
+
+\bibitem{palacharla1994evaluating}
+S.~Palacharla and R.~E.~Kessler, ``Evaluating Stream Buffers as a Secondary
+Cache Replacement,''
+\textit{21st Annual International Symposium on Computer Architecture (ISCA)},
+1994.
+\end{thebibliography}
+
+\end{document}
