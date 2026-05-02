@@ -58,8 +58,10 @@ void StreamBufferStats::merge(const StreamBufferStats &other) {
     reads += other.reads;
     writes += other.writes;
     read_hits += other.read_hits;
+    read_l2_hits += other.read_l2_hits;
     read_misses += other.read_misses;
     write_hits += other.write_hits;
+    write_l2_hits += other.write_l2_hits;
     write_misses += other.write_misses;
     prefetches_issued += other.prefetches_issued;
     prefetch_duplicate_suppressed += other.prefetch_duplicate_suppressed;
@@ -102,44 +104,90 @@ PrefetchPolicy parse_policy(const std::string &text) {
     return PrefetchPolicy::Adaptive;
 }
 
-// DemandCache is a tiny LRU cache that models the lines seen by demand reads
-// and writes. It is intentionally simple because the focus of this project is
-// the prefetcher rather than a detailed cache hierarchy.
-struct StreamBufferSimulator::DemandCache {
-    // Store the maximum number of lines the cache can hold.
-    explicit DemandCache(std::size_t capacity)
-        : capacity_(capacity) {}
+// SetAssocCache models a set-associative LRU cache, matching the design from
+// the homework 4 cache hierarchy.  Each set tracks its ways using an LRU
+// counter (0 = MRU, assoc-1 = LRU).  No victim cache is included.
+struct StreamBufferSimulator::SetAssocCache {
+    struct Entry {
+        bool valid = false;
+        std::uint64_t tag = 0;
+        int lru_status = 0;
+    };
 
-    // Access a line and return true on a hit, false on a miss.
-    bool access(std::uint64_t line) {
-        if (capacity_ == 0) {
-            return false;  // A zero-sized cache always misses.
+    SetAssocCache(std::size_t total_size_bytes, std::size_t block_size_bytes,
+                  std::size_t associativity) {
+        if (total_size_bytes == 0 || block_size_bytes == 0 || associativity == 0) {
+            assoc_ = 1;
+            num_sets_ = 0;
+            return;
+        }
+        assoc_ = associativity;
+        std::size_t total_lines = total_size_bytes / block_size_bytes;
+        num_sets_ = total_lines / assoc_;
+        if (num_sets_ == 0) num_sets_ = 1;
+
+        // Compute bit-field widths.
+        block_offset_bits_ = 0;
+        for (std::size_t v = block_size_bytes; v > 1; v >>= 1) ++block_offset_bits_;
+        set_bits_ = 0;
+        for (std::size_t v = num_sets_; v > 1; v >>= 1) ++set_bits_;
+
+        entries_.resize(num_sets_ * assoc_);
+        for (std::size_t s = 0; s < num_sets_; ++s) {
+            for (std::size_t w = 0; w < assoc_; ++w) {
+                entries_[s * assoc_ + w].lru_status = static_cast<int>(w);
+            }
+        }
+    }
+
+    // Access an address (byte-level). Returns true on hit, false on miss.
+    // On miss the line is installed, evicting the LRU entry.
+    bool access(std::uint64_t address) {
+        if (num_sets_ == 0) return false;
+
+        std::uint64_t tag_bits = address >> (block_offset_bits_ + set_bits_);
+        std::uint64_t set_index = (address >> block_offset_bits_) & ((1ULL << set_bits_) - 1);
+        std::size_t base = static_cast<std::size_t>(set_index) * assoc_;
+
+        // Check for hit.
+        for (std::size_t w = 0; w < assoc_; ++w) {
+            Entry &e = entries_[base + w];
+            if (e.valid && e.tag == tag_bits) {
+                update_lru(base, w);
+                return true;
+            }
         }
 
-        auto found = entries_.find(line);
-        if (found != entries_.end()) {
-            // On a hit, move the line to the back of the LRU list.
-            lru_.splice(lru_.end(), lru_, found->second);
-            return true;
+        // Miss — find LRU way and replace.
+        std::size_t lru_way = 0;
+        for (std::size_t w = 0; w < assoc_; ++w) {
+            if (entries_[base + w].lru_status == static_cast<int>(assoc_ - 1)) {
+                lru_way = w;
+                break;
+            }
         }
-
-        // Evict the least-recently-used line if the cache is full.
-        if (lru_.size() >= capacity_) {
-            const std::uint64_t victim = lru_.front();
-            lru_.pop_front();
-            entries_.erase(victim);
-        }
-
-        // Insert the new line at the MRU position.
-        lru_.push_back(line);
-        entries_[line] = std::prev(lru_.end());
+        entries_[base + lru_way].tag = tag_bits;
+        entries_[base + lru_way].valid = true;
+        update_lru(base, lru_way);
         return false;
     }
 
 private:
-    std::size_t capacity_ = 0;  // Fixed line capacity.
-    std::list<std::uint64_t> lru_;  // LRU order, with the front as the oldest entry.
-    std::unordered_map<std::uint64_t, std::list<std::uint64_t>::iterator> entries_;  // Fast lookup into the LRU list.
+    void update_lru(std::size_t base, std::size_t mru_way) {
+        int old_status = entries_[base + mru_way].lru_status;
+        for (std::size_t w = 0; w < assoc_; ++w) {
+            if (entries_[base + w].lru_status < old_status) {
+                entries_[base + w].lru_status++;
+            }
+        }
+        entries_[base + mru_way].lru_status = 0;
+    }
+
+    std::size_t assoc_ = 1;
+    std::size_t num_sets_ = 0;
+    unsigned block_offset_bits_ = 0;
+    unsigned set_bits_ = 0;
+    std::vector<Entry> entries_;
 };
 
 // PrefetchBuffer models a small holding area for prefetched lines. It tracks
@@ -310,22 +358,24 @@ StreamBufferSimulator::~StreamBufferSimulator() = default;
 // structures that model the cache and prefetch buffer.
 StreamBufferSimulator::StreamBufferSimulator(const StreamBufferConfig &config)
     : config_(config),
-      demand_cache_(new DemandCache(config.demand_cache_lines)),
+      l1d_cache_(new SetAssocCache(config.l1d_size_bytes, config.line_size_bytes, config.l1d_assoc)),
+      l2_cache_(new SetAssocCache(config.l2_size_bytes, config.line_size_bytes, config.l2_assoc)),
       prefetch_buffer_(new PrefetchBuffer(config.prefetch_buffer_lines)),
       slots_(config.stream_slots),
-      history_ready_(config.bootstrap_next_line) {
+      history_ready_(false) {
+    // history_ready_ stays false until the first real epoch rollover. The
+    // !history_ready_ branch in choose_prefetch_depth handles the bootstrap
+    // (depth=1 if bootstrap_next_line is set, depth=0 otherwise) for ALL
+    // stream lengths during warmup — not just length=1 like the previous
+    // seeded-histogram approach did.
     if (config_.line_size_bytes == 0) {
-        config_.line_size_bytes = 64;  // Keep the model well-defined if the user passes 0.
+        config_.line_size_bytes = 64;
     }
     if (config_.max_stream_length == 0) {
-        config_.max_stream_length = 1;  // Ensure histogram tables always have at least one bucket.
+        config_.max_stream_length = 1;
     }
-    lht_curr_.assign(config_.max_stream_length + 2, 0);  // Current-epoch histogram counts.
-    lht_next_.assign(config_.max_stream_length + 2, 0);  // Next-epoch histogram counts.
-    if (config_.bootstrap_next_line && config_.max_stream_length >= 2) {
-        lht_curr_[1] = 1;  // Seed a conservative next-line prior for the first epoch.
-        lht_curr_[2] = 1;  // Give the model one short-stream alternative.
-    }
+    lht_curr_.assign(config_.max_stream_length + 2, 0);
+    lht_next_.assign(config_.max_stream_length + 2, 0);
 }
 
 // Expose the current statistics snapshot.
@@ -349,8 +399,12 @@ std::string StreamBufferSimulator::summary(const std::string &label) const {
     out << label << '\n';
     out << "  policy: " << to_string(config_.policy) << '\n';
     out << "  refs: " << stats_.total_refs << "  reads: " << stats_.reads << "  writes: " << stats_.writes << '\n';
-    out << "  read hits: " << stats_.read_hits << "  read misses: " << stats_.read_misses
-        << "  write hits: " << stats_.write_hits << "  write misses: " << stats_.write_misses << '\n';
+    out << "  L1D: " << config_.l1d_size_bytes << "B " << config_.l1d_assoc << "-way"
+        << "  L2: " << config_.l2_size_bytes << "B " << config_.l2_assoc << "-way\n";
+    out << "  read L1 hits: " << stats_.read_hits << "  read L2 hits: " << stats_.read_l2_hits
+        << "  read misses: " << stats_.read_misses
+        << "  write L1 hits: " << stats_.write_hits << "  write L2 hits: " << stats_.write_l2_hits
+        << "  write misses: " << stats_.write_misses << '\n';
     out << "  prefetches issued: " << stats_.prefetches_issued
         << "  useful: " << stats_.prefetch_useful
         << "  ready hits: " << stats_.prefetch_ready_hits
@@ -539,7 +593,10 @@ std::uint32_t StreamBufferSimulator::choose_prefetch_depth(std::uint32_t current
     const std::uint32_t capped_length = static_cast<std::uint32_t>(
         std::min<std::uint64_t>(current_length, static_cast<std::uint64_t>(config_.max_stream_length)));
     if (capped_length >= config_.max_stream_length) {
-        return 0;  // Nothing beyond the largest histogram bucket can be learned.
+        // The stream has reached the histogram's largest bucket. We have direct
+        // evidence the stream is long-lived, so prefetch maximally rather than
+        // truncating to zero.
+        return static_cast<std::uint32_t>(config_.max_prefetch_depth);
     }
 
     std::uint32_t depth = 0;
@@ -557,10 +614,13 @@ std::uint32_t StreamBufferSimulator::choose_prefetch_depth(std::uint32_t current
     return depth;
 }
 
-// Record the fact that a stream of length one was observed but not tracked in
-// a live slot.
+// When all slots are full and a miss can't be tracked, we don't actually know
+// whether it belongs to a short or long stream. Recording it as a phantom
+// length-1 stream would bias the histogram toward "throttle." Instead we
+// record nothing — the histogram only learns from streams we actually
+// followed end-to-end.
 void StreamBufferSimulator::record_singleton_stream() {
-    lht_next_[1] += 1;
+    // intentionally empty
 }
 
 // Issue one or more prefetches based on the current stream and the active
@@ -606,24 +666,33 @@ void StreamBufferSimulator::access(AccessKind kind, std::uint64_t address) {
 
     const std::uint64_t line = address_to_line(address);
 
+    // The cache hierarchy uses byte addresses so the set/tag math works
+    // correctly with the configured block size.
+    const std::uint64_t byte_addr = line * config_.line_size_bytes;
+
     if (kind == AccessKind::Read) {
         ++stats_.reads;
 
-        // First consult the demand cache, which represents normal cache hits.
-        if (demand_cache_->access(line)) {
+        // L1D check.
+        if (l1d_cache_->access(byte_addr)) {
             ++stats_.read_hits;
             stats_.modeled_cycles += config_.base_ref_cost + config_.hit_latency_refs;
-            if (config_.epoch_reads != 0) {
-                // Demand hits do not touch the memory controller, so they do not
-                // contribute to the stream-length histogram.
-            }
             return;
         }
 
+        // L1D miss — check L2.
+        if (l2_cache_->access(byte_addr)) {
+            ++stats_.read_l2_hits;
+            // Install into L1D on the way back.
+            l1d_cache_->access(byte_addr);
+            stats_.modeled_cycles += config_.base_ref_cost + config_.l2_hit_latency_refs;
+            return;
+        }
+
+        // L2 miss — this is a full memory miss. The stream buffer observes
+        // L2 misses and may rescue the access from the prefetch buffer.
         ++stats_.read_misses;
 
-        // Reads that miss the demand cache may still be rescued by the
-        // prefetch buffer.
         std::uint64_t access_latency = config_.miss_latency_refs;
         if (config_.policy != PrefetchPolicy::Off) {
             const auto probe = prefetch_buffer_->probe(line, logical_time_);
@@ -632,7 +701,7 @@ void StreamBufferSimulator::access(AccessKind kind, std::uint64_t address) {
                 std::uint64_t ready_at = 0;
                 prefetch_buffer_->claim(line, logical_time_, &ready, &ready_at, stats_);
                 if (ready) {
-                    access_latency = config_.hit_latency_refs;  // The prefetch arrived in time.
+                    access_latency = config_.hit_latency_refs;
                     ++stats_.prefetch_ready_hits;
                 } else {
                     const std::uint64_t remaining = (ready_at > logical_time_) ? (ready_at - logical_time_) : 0;
@@ -642,9 +711,9 @@ void StreamBufferSimulator::access(AccessKind kind, std::uint64_t address) {
             }
         }
 
-        // Mark the line as resident in the demand cache once the miss is
-        // serviced.
-        demand_cache_->access(line);
+        // Install the line into both cache levels.
+        l2_cache_->access(byte_addr);
+        l1d_cache_->access(byte_addr);
 
         if (config_.policy == PrefetchPolicy::NextLine) {
             maybe_generate_prefetches(line, nullptr, logical_time_);
@@ -652,7 +721,6 @@ void StreamBufferSimulator::access(AccessKind kind, std::uint64_t address) {
             const std::size_t match = find_matching_slot(line);
             StreamSlot *slot = nullptr;
             if (match != slots_.size()) {
-                // Extend the matching stream.
                 slot = &slots_[match];
                 ++stats_.stream_extensions;
                 if (slot->direction == 0 && slot->length == 1) {
@@ -667,7 +735,6 @@ void StreamBufferSimulator::access(AccessKind kind, std::uint64_t address) {
                 slot->remaining_life = config_.stream_lifetime_refs;
                 slot->last_touch = logical_time_;
             } else {
-                // No existing stream matched, so allocate a new slot if one is free.
                 const std::size_t free_slot = find_free_slot();
                 if (free_slot != slots_.size()) {
                     slot = &slots_[free_slot];
@@ -679,8 +746,6 @@ void StreamBufferSimulator::access(AccessKind kind, std::uint64_t address) {
                     slot->last_touch = logical_time_;
                     ++stats_.stream_starts;
                 } else {
-                    // If all slots are busy, we still remember that a singleton
-                    // stream was observed for histogram learning.
                     ++stats_.stream_dropped;
                     record_singleton_stream();
                 }
@@ -691,7 +756,6 @@ void StreamBufferSimulator::access(AccessKind kind, std::uint64_t address) {
             }
         }
 
-        // Accumulate the modeled cost for this read.
         stats_.modeled_cycles += config_.base_ref_cost + access_latency;
         if (config_.epoch_reads != 0) {
             ++read_count_in_epoch_;
@@ -702,15 +766,19 @@ void StreamBufferSimulator::access(AccessKind kind, std::uint64_t address) {
         return;
     }
 
-    // Writes update the demand cache and invalidate any prefetched copy of the
-    // same line.
+    // Writes go through the same L1D → L2 hierarchy.
     ++stats_.writes;
-    const bool write_hit = demand_cache_->access(line);
-    if (write_hit) {
+    if (l1d_cache_->access(byte_addr)) {
         ++stats_.write_hits;
         stats_.modeled_cycles += config_.base_ref_cost + config_.write_latency_refs;
+    } else if (l2_cache_->access(byte_addr)) {
+        ++stats_.write_l2_hits;
+        l1d_cache_->access(byte_addr);
+        stats_.modeled_cycles += config_.base_ref_cost + config_.l2_hit_latency_refs;
     } else {
         ++stats_.write_misses;
+        l2_cache_->access(byte_addr);
+        l1d_cache_->access(byte_addr);
         stats_.modeled_cycles += config_.base_ref_cost + config_.miss_latency_refs;
     }
 

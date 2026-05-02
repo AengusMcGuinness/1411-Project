@@ -4,135 +4,84 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# ── 0. Clean previous outputs ─────────────────────────────────────
-echo ">> Cleaning previous outputs..."
-rm -rf logs plots smoke_test.csv stream_buffer_experiments.csv
+CSV_OUT="stream_buffer_experiments.csv"
+
+# ── 0. Minimal setup (no cleaning — we want to resume) ───────────
 mkdir -p logs plots
 
-# ── 1. Check PIN_ROOT ──────────────────────────────────────────────
+# ── 1. Check PIN_ROOT ─────────────────────────────────────────────
 if [ -z "${PIN_ROOT:-}" ]; then
     echo "ERROR: PIN_ROOT is not set. Run: export PIN_ROOT=\$PIN_ROOT"
     exit 1
 fi
 echo "PIN_ROOT=$PIN_ROOT"
-echo "PIN_BIN=$PIN_ROOT/pin"
 ls -la "$PIN_ROOT/pin" || { echo "ERROR: pin binary not found"; exit 1; }
 
-# ── 2. Copy benchmarks if missing ──────────────────────────────────
+# ── 2. Copy benchmarks if missing ─────────────────────────────────
 if [ ! -d benchmarks ]; then
     echo ">> Copying benchmarks from ASSIGNMENT3..."
     if [ -d "$HOME/workspace/ASSIGNMENT3/benchmarks" ]; then
         cp -r "$HOME/workspace/ASSIGNMENT3/benchmarks" benchmarks
     else
         echo "ERROR: benchmarks/ not found and ~/workspace/ASSIGNMENT3/benchmarks doesn't exist."
-        echo "Copy them manually: cp -r /path/to/benchmarks ./benchmarks"
         exit 1
     fi
 fi
-echo ">> Benchmarks:"
-ls -la benchmarks/
-ls -la benchmarks/inputs/
 
-# ── 3. Build the pintool (always clean to avoid stale binaries) ────
-echo ">> Building pintool (clean + rebuild)..."
-make pin-clean pin PIN_ROOT="$PIN_ROOT"
-
+# ── 3. Build pintool only if .so is missing ───────────────────────
 PIN_TOOL="pintool/obj-intel64/adaptive_stream_buffer_pintool.so"
-echo ">> Checking pintool .so exists:"
-ls -la "$PIN_TOOL" || { echo "ERROR: pintool .so not found"; exit 1; }
-
-# ── 4. DEBUG: Run ONE Pin invocation directly to see raw output ────
-echo ""
-echo "========================================"
-echo "  DEBUG: Running single Pin invocation"
-echo "========================================"
-echo "Command:"
-echo "  $PIN_ROOT/pin -t $PIN_TOOL -policy adaptive -stream_slots 8 -max_instructions 1000000 -- benchmarks/libquantum_O3 400 25"
-echo ""
-
-DEBUG_LOG="logs/debug_single_run.log"
-set +e
-"$PIN_ROOT/pin" \
-    -t "$PIN_TOOL" \
-    -policy adaptive \
-    -stream_slots 8 \
-    -max_instructions 1000000 \
-    -- benchmarks/libquantum_O3 400 25 \
-    > "$DEBUG_LOG" 2>&1
-DEBUG_EXIT=$?
-set -e
-
-echo ">> Exit code: $DEBUG_EXIT"
-echo ">> Raw output ($DEBUG_LOG):"
-echo "--- START ---"
-cat "$DEBUG_LOG"
-echo "--- END ---"
-echo ""
-
-# Check if we got the expected output format
-if grep -q "^selected" "$DEBUG_LOG"; then
-    echo ">> GOOD: Found 'selected' block in output"
+if [ ! -f "$PIN_TOOL" ]; then
+    echo ">> Building pintool..."
+    make pin-clean pin PIN_ROOT="$PIN_ROOT"
 else
-    echo ">> PROBLEM: No 'selected' block found in output"
-    echo ">> The pintool is not producing expected output."
-    echo ">> Check the log above for errors."
+    echo ">> Pintool already built, skipping rebuild."
+fi
+ls -la "$PIN_TOOL"
+
+# ── 4. Resume-aware full sweep ────────────────────────────────────
+#
+# Parameter space (72 total configs):
+#   3 benchmarks  : libquantum, hmmer, dealII
+#   3 policies    : off, nextline, adaptive
+#   2 stream_slots: 4, 8
+#   2 max_depth   : 2, 8
+#   2 max_length  : 8, 32
+#
+# (off and nextline ignore stream params, but the redundant combos
+#  are fast — same result, Pin still runs quickly.)
+#
+if [ -f "$CSV_OUT" ]; then
+    done_count=$(tail -n +2 "$CSV_OUT" | grep -c ',ok,' || true)
+    echo ">> Resuming sweep ($done_count configs already completed in $CSV_OUT)"
+else
+    echo ">> Starting fresh sweep"
 fi
 
-if grep -q "^baseline" "$DEBUG_LOG"; then
-    echo ">> GOOD: Found 'baseline' block in output"
-else
-    echo ">> PROBLEM: No 'baseline' block found in output"
-fi
+echo ">> Running full parameter sweep (stream buffer only, no victim cache)..."
+echo ">> 72 configs × 3 benchmarks — results stream to $CSV_OUT"
+echo ">> Safe to kill and re-run to resume from where it left off."
 
-if grep -q "modeled cycles:" "$DEBUG_LOG"; then
-    echo ">> GOOD: Found 'modeled cycles' in output"
-else
-    echo ">> PROBLEM: No 'modeled cycles' found in output"
-fi
-
-echo ""
-echo "========================================"
-echo "  DEBUG complete. Review output above."
-echo "  If it looks correct, the sweep should work."
-echo "========================================"
-echo ""
-
-# ── 5. Quick smoke test ────────────────────────────────────────────
-echo ">> Running smoke test (2 configs, 1M instructions — pipeline check only)..."
 PIN_ROOT="$PIN_ROOT" \
 MAX_JOBS=4 \
-MAX_INSTRUCTIONS=1000000 \
-POLICY_VALUES="adaptive" \
-STREAM_SLOTS_VALUES="4 8" \
-./scripts/sweep_stream_buffer.sh -o smoke_test.csv 2>&1 | tee logs/smoke_test.log
-
-echo ">> Smoke test results:"
-cat smoke_test.csv
-echo ""
-
-# ── 6. Full sweep ──────────────────────────────────────────────────
-echo ">> Running full parameter sweep..."
-PIN_ROOT="$PIN_ROOT" \
-MAX_JOBS=4 \
-MAX_INSTRUCTIONS=0 \
+MAX_INSTRUCTIONS=5000000000 \
 POLICY_VALUES="off nextline adaptive" \
-STREAM_SLOTS_VALUES="4 8 16" \
-MAX_PREFETCH_DEPTH_VALUES="1 2 4 8" \
-MAX_STREAM_LENGTH_VALUES="8 16 32" \
-./scripts/sweep_stream_buffer.sh -o stream_buffer_experiments.csv 2>&1 | tee logs/full_sweep.log
+STREAM_SLOTS_VALUES="4 8" \
+MAX_PREFETCH_DEPTH_VALUES="2 8" \
+MAX_STREAM_LENGTH_VALUES="8 32" \
+./scripts/sweep_stream_buffer.sh -o "$CSV_OUT" 2>&1 | tee -a logs/full_sweep.log
 
 echo ">> Sweep complete."
 
-# ── 7. Generate plots ─────────────────────────────────────────────
+# ── 5. Generate plots ─────────────────────────────────────────────
 echo ">> Generating plots..."
-.venv/bin/python3 scripts/plot_speedup.py
-.venv/bin/python3 scripts/plot_hardware_cost.py
-.venv/bin/python3 scripts/plot_accuracy_coverage.py
+.venv/bin/python3 scripts/plot_speedup.py || echo "plot_speedup.py failed (non-fatal)"
+.venv/bin/python3 scripts/plot_hardware_cost.py || echo "plot_hardware_cost.py failed (non-fatal)"
+.venv/bin/python3 scripts/plot_accuracy_coverage.py || echo "plot_accuracy_coverage.py failed (non-fatal)"
 
 echo ""
 echo "========================================="
 echo "  DONE. Results:"
-echo "    CSV:   stream_buffer_experiments.csv"
+echo "    CSV:   $CSV_OUT"
 echo "    Plots: plots/"
 echo "    Logs:  logs/"
 echo "========================================="

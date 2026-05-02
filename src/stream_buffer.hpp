@@ -30,16 +30,25 @@ enum class PrefetchPolicy {
 // one place so the CLI and Pintool can share the same knobs.
 struct StreamBufferConfig {
     std::uint64_t line_size_bytes = 64;        // Cache-line granularity used to bucket addresses.
-    std::size_t demand_cache_lines = 4096;     // Capacity of the demand cache model.
+
+    // L1 data cache parameters (set-associative LRU).
+    std::size_t l1d_size_bytes = 4096;         // Total L1D capacity in bytes.
+    std::size_t l1d_assoc = 1;                 // L1D associativity (ways).
+
+    // L2 unified cache parameters (set-associative LRU).
+    std::size_t l2_size_bytes = 1048576;       // Total L2 capacity in bytes (1 MB).
+    std::size_t l2_assoc = 1;                  // L2 associativity (ways).
+
     std::size_t prefetch_buffer_lines = 16;    // Capacity of the prefetch buffer model.
     std::size_t stream_slots = 8;              // Number of active streams the tracker can remember.
     std::size_t max_stream_length = 16;        // Largest stream length tracked in the histogram.
     std::uint64_t epoch_reads = 2000;          // Number of read misses per histogram epoch.
     std::uint64_t stream_lifetime_refs = 256;   // Lifetime of a stream slot in logical reference steps.
     std::uint64_t prefetch_latency_refs = 8;    // Delay before a prefetched line becomes ready.
-    std::uint64_t miss_latency_refs = 80;       // Cost of a demand miss that goes to memory.
-    std::uint64_t hit_latency_refs = 1;         // Cost of a cache or prefetch hit.
-    std::uint64_t write_latency_refs = 1;       // Cost of a write that hits in the demand cache.
+    std::uint64_t miss_latency_refs = 80;       // Cost of a demand miss that goes to memory (L2 miss).
+    std::uint64_t l2_hit_latency_refs = 10;     // Cost of an L2 hit (L1 miss, L2 hit).
+    std::uint64_t hit_latency_refs = 1;         // Cost of an L1 cache hit.
+    std::uint64_t write_latency_refs = 1;       // Cost of a write that hits in L1.
     std::uint64_t base_ref_cost = 1;            // Per-reference bookkeeping cost in the model.
     std::size_t max_prefetch_depth = 8;         // Maximum number of lines prefetched ahead.
     bool bootstrap_next_line = true;            // Seed the first epoch with a conservative next-line bias.
@@ -53,10 +62,12 @@ struct StreamBufferStats {
     std::uint64_t reads = 0;                     // Number of read references.
     std::uint64_t writes = 0;                    // Number of write references.
 
-    std::uint64_t read_hits = 0;                 // Reads satisfied by the demand cache.
-    std::uint64_t read_misses = 0;               // Reads that missed the demand cache.
-    std::uint64_t write_hits = 0;                // Writes that hit in the demand cache.
-    std::uint64_t write_misses = 0;              // Writes that missed the demand cache.
+    std::uint64_t read_hits = 0;                 // Reads satisfied by L1D.
+    std::uint64_t read_l2_hits = 0;              // Reads that missed L1D but hit L2.
+    std::uint64_t read_misses = 0;               // Reads that missed both L1D and L2.
+    std::uint64_t write_hits = 0;                // Writes that hit in L1D.
+    std::uint64_t write_l2_hits = 0;             // Writes that missed L1D but hit L2.
+    std::uint64_t write_misses = 0;              // Writes that missed both L1D and L2.
 
     std::uint64_t prefetches_issued = 0;         // Prefetch requests successfully inserted.
     std::uint64_t prefetch_duplicate_suppressed = 0;  // Prefetches blocked because the line was already present.
@@ -118,9 +129,9 @@ private:
         std::uint64_t last_touch = 0;    // Logical time of the most recent update.
     };
 
-    // DemandCache and PrefetchBuffer are defined in the implementation file so
-    // the header stays lightweight.
-    struct DemandCache;
+    // SetAssocCache and PrefetchBuffer are defined in the implementation file
+    // so the header stays lightweight.
+    struct SetAssocCache;
     struct PrefetchBuffer;
 
     // Convert a byte address to a cache-line number.
@@ -152,7 +163,8 @@ private:
 
     StreamBufferConfig config_;                   // Tunable settings for the model.
     StreamBufferStats stats_;                     // Live counters and metrics.
-    std::unique_ptr<DemandCache> demand_cache_;   // Demand-cache backing store.
+    std::unique_ptr<SetAssocCache> l1d_cache_;    // L1 data cache.
+    std::unique_ptr<SetAssocCache> l2_cache_;     // L2 unified cache.
     std::unique_ptr<PrefetchBuffer> prefetch_buffer_;  // Prefetch-buffer backing store.
     std::vector<StreamSlot> slots_;               // Active stream tracker entries.
     std::vector<std::uint64_t> lht_curr_;         // Current epoch likelihood table.

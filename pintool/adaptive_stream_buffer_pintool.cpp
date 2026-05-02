@@ -28,8 +28,14 @@ KNOB<std::string> KnobPolicy(KNOB_MODE_WRITEONCE, "pintool", "policy", "adaptive
                              "Prefetch policy: off, nextline, or adaptive");
 KNOB<UINT64> KnobLineSize(KNOB_MODE_WRITEONCE, "pintool", "line_size", "64",
                           "Cache-line size in bytes");
-KNOB<UINT64> KnobDemandCacheLines(KNOB_MODE_WRITEONCE, "pintool", "demand_cache_lines", "4096",
-                                  "Demand cache capacity in lines");
+KNOB<UINT64> KnobL1DSize(KNOB_MODE_WRITEONCE, "pintool", "l1d_size", "4096",
+                         "L1 data cache size in bytes");
+KNOB<UINT64> KnobL1DAssoc(KNOB_MODE_WRITEONCE, "pintool", "l1d_assoc", "1",
+                          "L1 data cache associativity");
+KNOB<UINT64> KnobL2Size(KNOB_MODE_WRITEONCE, "pintool", "l2_size", "1048576",
+                        "L2 cache size in bytes");
+KNOB<UINT64> KnobL2Assoc(KNOB_MODE_WRITEONCE, "pintool", "l2_assoc", "1",
+                         "L2 cache associativity");
 KNOB<UINT64> KnobPrefetchBufferLines(KNOB_MODE_WRITEONCE, "pintool", "prefetch_buffer_lines", "16",
                                      "Prefetch buffer capacity in lines");
 KNOB<UINT64> KnobStreamSlots(KNOB_MODE_WRITEONCE, "pintool", "stream_slots", "8",
@@ -43,9 +49,11 @@ KNOB<UINT64> KnobStreamLifetime(KNOB_MODE_WRITEONCE, "pintool", "stream_lifetime
 KNOB<UINT64> KnobPrefetchLatency(KNOB_MODE_WRITEONCE, "pintool", "prefetch_latency", "8",
                                  "Prefetch arrival latency in reference steps");
 KNOB<UINT64> KnobMissLatency(KNOB_MODE_WRITEONCE, "pintool", "miss_latency", "80",
-                             "Memory-miss latency in reference steps");
+                             "L2-miss (memory) latency in reference steps");
+KNOB<UINT64> KnobL2HitLatency(KNOB_MODE_WRITEONCE, "pintool", "l2_hit_latency", "10",
+                               "L2-hit latency in reference steps");
 KNOB<UINT64> KnobHitLatency(KNOB_MODE_WRITEONCE, "pintool", "hit_latency", "1",
-                            "Cache or buffer hit latency in reference steps");
+                            "L1 hit latency in reference steps");
 KNOB<UINT64> KnobWriteLatency(KNOB_MODE_WRITEONCE, "pintool", "write_latency", "1",
                               "Write hit latency in reference steps");
 KNOB<UINT64> KnobBaseCost(KNOB_MODE_WRITEONCE, "pintool", "base_cost", "1",
@@ -85,7 +93,10 @@ StreamBufferConfig BuildConfigFromKnobs() {
     StreamBufferConfig config;
     config.policy = parse_policy(KnobPolicy.Value());
     config.line_size_bytes = KnobLineSize.Value();
-    config.demand_cache_lines = static_cast<std::size_t>(KnobDemandCacheLines.Value());
+    config.l1d_size_bytes = static_cast<std::size_t>(KnobL1DSize.Value());
+    config.l1d_assoc = static_cast<std::size_t>(KnobL1DAssoc.Value());
+    config.l2_size_bytes = static_cast<std::size_t>(KnobL2Size.Value());
+    config.l2_assoc = static_cast<std::size_t>(KnobL2Assoc.Value());
     config.prefetch_buffer_lines = static_cast<std::size_t>(KnobPrefetchBufferLines.Value());
     config.stream_slots = static_cast<std::size_t>(KnobStreamSlots.Value());
     config.max_stream_length = static_cast<std::size_t>(KnobMaxStreamLength.Value());
@@ -93,6 +104,7 @@ StreamBufferConfig BuildConfigFromKnobs() {
     config.stream_lifetime_refs = KnobStreamLifetime.Value();
     config.prefetch_latency_refs = KnobPrefetchLatency.Value();
     config.miss_latency_refs = KnobMissLatency.Value();
+    config.l2_hit_latency_refs = KnobL2HitLatency.Value();
     config.hit_latency_refs = KnobHitLatency.Value();
     config.write_latency_refs = KnobWriteLatency.Value();
     config.base_ref_cost = KnobBaseCost.Value();
@@ -217,7 +229,8 @@ VOID Fini(INT32 code, VOID *v) {
     out << "adaptive stream buffer pintool\n";
     out << "  policy: " << to_string(g_selected_config.policy) << '\n';
     out << "  line size: " << g_selected_config.line_size_bytes << '\n';
-    out << "  demand cache lines: " << g_selected_config.demand_cache_lines << '\n';
+    out << "  L1D: " << g_selected_config.l1d_size_bytes << "B " << g_selected_config.l1d_assoc << "-way\n";
+    out << "  L2: " << g_selected_config.l2_size_bytes << "B " << g_selected_config.l2_assoc << "-way\n";
     out << "  prefetch buffer lines: " << g_selected_config.prefetch_buffer_lines << '\n';
     out << "  stream slots: " << g_selected_config.stream_slots << '\n';
     out << "  max stream length: " << g_selected_config.max_stream_length << '\n';
@@ -229,8 +242,10 @@ VOID Fini(INT32 code, VOID *v) {
     out << "selected\n";
     out << "  refs: " << g_selected_total.total_refs << "  reads: " << g_selected_total.reads
         << "  writes: " << g_selected_total.writes << '\n';
-    out << "  read hits: " << g_selected_total.read_hits << "  read misses: " << g_selected_total.read_misses
-        << "  write hits: " << g_selected_total.write_hits << "  write misses: " << g_selected_total.write_misses << '\n';
+    out << "  read L1 hits: " << g_selected_total.read_hits << "  read L2 hits: " << g_selected_total.read_l2_hits
+        << "  read misses: " << g_selected_total.read_misses
+        << "  write L1 hits: " << g_selected_total.write_hits << "  write L2 hits: " << g_selected_total.write_l2_hits
+        << "  write misses: " << g_selected_total.write_misses << '\n';
     out << "  prefetches issued: " << g_selected_total.prefetches_issued
         << "  useful: " << g_selected_total.prefetch_useful
         << "  ready hits: " << g_selected_total.prefetch_ready_hits
@@ -243,8 +258,10 @@ VOID Fini(INT32 code, VOID *v) {
     out << "baseline\n";
     out << "  refs: " << g_baseline_total.total_refs << "  reads: " << g_baseline_total.reads
         << "  writes: " << g_baseline_total.writes << '\n';
-    out << "  read hits: " << g_baseline_total.read_hits << "  read misses: " << g_baseline_total.read_misses
-        << "  write hits: " << g_baseline_total.write_hits << "  write misses: " << g_baseline_total.write_misses << '\n';
+    out << "  read L1 hits: " << g_baseline_total.read_hits << "  read L2 hits: " << g_baseline_total.read_l2_hits
+        << "  read misses: " << g_baseline_total.read_misses
+        << "  write L1 hits: " << g_baseline_total.write_hits << "  write L2 hits: " << g_baseline_total.write_l2_hits
+        << "  write misses: " << g_baseline_total.write_misses << '\n';
     out << "  modeled cycles: " << g_baseline_total.modeled_cycles << '\n';
 
     const double speedup = (g_selected_total.modeled_cycles == 0)

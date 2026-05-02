@@ -87,9 +87,9 @@ normalize_bool() {
 }
 
 emit_csv_row() {
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "$1"  "$2"  "$3"  "$4"  "$5"  "$6"  "$7"  "$8"  "$9"  \
-        "${10}" "${11}" "${12}" "${13}" "${14}" "${15}" "${16}" "${17}" "${18}" "${19}" "${20}" "${21}"
+        "${10}" "${11}" "${12}" "${13}" "${14}" "${15}" "${16}" "${17}" "${18}" "${19}" "${20}" "${21}" "${22}" "${23}" "${24}" "${25}" "${26}" "${27}"
 }
 
 extract_selected_cycles() {
@@ -107,12 +107,41 @@ extract_baseline_cycles() {
     '
 }
 
+# Pull "accuracy: 32.69%" out of the selected block.
+extract_selected_accuracy() {
+    awk '
+        $0 == "selected" { in_selected = 1; next }
+        in_selected && $0 == "baseline" { exit }
+        in_selected && /^  accuracy:/ {
+            gsub(/%/, "", $2);
+            printf "%.4f", $2 / 100.0;
+            exit
+        }
+    '
+}
+
+# Pull "coverage: 9.24%" out of the selected block (it lives on the same line as accuracy).
+extract_selected_coverage() {
+    awk '
+        $0 == "selected" { in_selected = 1; next }
+        in_selected && $0 == "baseline" { exit }
+        in_selected && /^  accuracy:/ {
+            gsub(/%/, "", $4);
+            printf "%.4f", $4 / 100.0;
+            exit
+        }
+    '
+}
+
 values_for_key() {
     case "$1" in
         benchmark) printf '%s\n' "${BENCHMARK_VALUES_ARR[@]}" ;;
         policy) printf '%s\n' "${POLICY_VALUES_ARR[@]}" ;;
         line_size) printf '%s\n' "${LINE_SIZE_VALUES_ARR[@]}" ;;
-        demand_cache_lines) printf '%s\n' "${DEMAND_CACHE_LINES_VALUES_ARR[@]}" ;;
+        l1d_size) printf '%s\n' "${L1D_SIZE_VALUES_ARR[@]}" ;;
+        l1d_assoc) printf '%s\n' "${L1D_ASSOC_VALUES_ARR[@]}" ;;
+        l2_size) printf '%s\n' "${L2_SIZE_VALUES_ARR[@]}" ;;
+        l2_assoc) printf '%s\n' "${L2_ASSOC_VALUES_ARR[@]}" ;;
         prefetch_buffer_lines) printf '%s\n' "${PREFETCH_BUFFER_LINES_VALUES_ARR[@]}" ;;
         stream_slots) printf '%s\n' "${STREAM_SLOTS_VALUES_ARR[@]}" ;;
         max_stream_length) printf '%s\n' "${MAX_STREAM_LENGTH_VALUES_ARR[@]}" ;;
@@ -120,6 +149,7 @@ values_for_key() {
         stream_lifetime) printf '%s\n' "${STREAM_LIFETIME_VALUES_ARR[@]}" ;;
         prefetch_latency) printf '%s\n' "${PREFETCH_LATENCY_VALUES_ARR[@]}" ;;
         miss_latency) printf '%s\n' "${MISS_LATENCY_VALUES_ARR[@]}" ;;
+        l2_hit_latency) printf '%s\n' "${L2_HIT_LATENCY_VALUES_ARR[@]}" ;;
         hit_latency) printf '%s\n' "${HIT_LATENCY_VALUES_ARR[@]}" ;;
         write_latency) printf '%s\n' "${WRITE_LATENCY_VALUES_ARR[@]}" ;;
         base_cost) printf '%s\n' "${BASE_COST_VALUES_ARR[@]}" ;;
@@ -134,7 +164,10 @@ assign_current_value() {
         benchmark) CURRENT_BENCHMARK="$2" ;;
         policy) CURRENT_POLICY="$2" ;;
         line_size) CURRENT_LINE_SIZE="$2" ;;
-        demand_cache_lines) CURRENT_DEMAND_CACHE_LINES="$2" ;;
+        l1d_size) CURRENT_L1D_SIZE="$2" ;;
+        l1d_assoc) CURRENT_L1D_ASSOC="$2" ;;
+        l2_size) CURRENT_L2_SIZE="$2" ;;
+        l2_assoc) CURRENT_L2_ASSOC="$2" ;;
         prefetch_buffer_lines) CURRENT_PREFETCH_BUFFER_LINES="$2" ;;
         stream_slots) CURRENT_STREAM_SLOTS="$2" ;;
         max_stream_length) CURRENT_MAX_STREAM_LENGTH="$2" ;;
@@ -142,6 +175,7 @@ assign_current_value() {
         stream_lifetime) CURRENT_STREAM_LIFETIME="$2" ;;
         prefetch_latency) CURRENT_PREFETCH_LATENCY="$2" ;;
         miss_latency) CURRENT_MISS_LATENCY="$2" ;;
+        l2_hit_latency) CURRENT_L2_HIT_LATENCY="$2" ;;
         hit_latency) CURRENT_HIT_LATENCY="$2" ;;
         write_latency) CURRENT_WRITE_LATENCY="$2" ;;
         base_cost) CURRENT_BASE_COST="$2" ;;
@@ -156,7 +190,10 @@ count_values_for_key() {
         benchmark) printf '%s\n' "${#BENCHMARK_VALUES_ARR[@]}" ;;
         policy) printf '%s\n' "${#POLICY_VALUES_ARR[@]}" ;;
         line_size) printf '%s\n' "${#LINE_SIZE_VALUES_ARR[@]}" ;;
-        demand_cache_lines) printf '%s\n' "${#DEMAND_CACHE_LINES_VALUES_ARR[@]}" ;;
+        l1d_size) printf '%s\n' "${#L1D_SIZE_VALUES_ARR[@]}" ;;
+        l1d_assoc) printf '%s\n' "${#L1D_ASSOC_VALUES_ARR[@]}" ;;
+        l2_size) printf '%s\n' "${#L2_SIZE_VALUES_ARR[@]}" ;;
+        l2_assoc) printf '%s\n' "${#L2_ASSOC_VALUES_ARR[@]}" ;;
         prefetch_buffer_lines) printf '%s\n' "${#PREFETCH_BUFFER_LINES_VALUES_ARR[@]}" ;;
         stream_slots) printf '%s\n' "${#STREAM_SLOTS_VALUES_ARR[@]}" ;;
         max_stream_length) printf '%s\n' "${#MAX_STREAM_LENGTH_VALUES_ARR[@]}" ;;
@@ -164,6 +201,7 @@ count_values_for_key() {
         stream_lifetime) printf '%s\n' "${#STREAM_LIFETIME_VALUES_ARR[@]}" ;;
         prefetch_latency) printf '%s\n' "${#PREFETCH_LATENCY_VALUES_ARR[@]}" ;;
         miss_latency) printf '%s\n' "${#MISS_LATENCY_VALUES_ARR[@]}" ;;
+        l2_hit_latency) printf '%s\n' "${#L2_HIT_LATENCY_VALUES_ARR[@]}" ;;
         hit_latency) printf '%s\n' "${#HIT_LATENCY_VALUES_ARR[@]}" ;;
         write_latency) printf '%s\n' "${#WRITE_LATENCY_VALUES_ARR[@]}" ;;
         base_cost) printf '%s\n' "${#BASE_COST_VALUES_ARR[@]}" ;;
@@ -191,6 +229,7 @@ reap_finished_jobs() {
     local i pid status
     local -a remaining_pids=()
     local -a remaining_labels=()
+    local -a remaining_row_indices=()
     local reaped_any=1
 
     for i in "${!pids[@]}"; do
@@ -203,15 +242,23 @@ reap_finished_jobs() {
             completed_jobs=$((completed_jobs + 1))
             active_jobs=$((active_jobs - 1))
             log_progress "completed" "$completed_jobs" "$active_jobs" "${job_labels[$i]}"
+            # Flush result to output file immediately so partial results survive kills.
+            local ridx="${job_row_indices[$i]}"
+            local rfile="$WORKDIR/row_${ridx}.csv"
+            if [ -f "$rfile" ] && [ -n "$output_file" ]; then
+                cat "$rfile" >>"$output_file"
+            fi
             reaped_any=0
         else
             remaining_pids+=("$pid")
             remaining_labels+=("${job_labels[$i]}")
+            remaining_row_indices+=("${job_row_indices[$i]}")
         fi
     done
 
     pids=("${remaining_pids[@]}")
     job_labels=("${remaining_labels[@]}")
+    job_row_indices=("${remaining_row_indices[@]}")
     active_jobs="${#pids[@]}"
 
     return "$reaped_any"
@@ -231,19 +278,23 @@ run_one() {
     local benchmark="$2"
     local policy="$3"
     local line_size="$4"
-    local demand_cache_lines="$5"
-    local prefetch_buffer_lines="$6"
-    local stream_slots="$7"
-    local max_stream_length="$8"
-    local epoch_reads="$9"
-    local stream_lifetime="${10}"
-    local prefetch_latency="${11}"
-    local miss_latency="${12}"
-    local hit_latency="${13}"
-    local write_latency="${14}"
-    local base_cost="${15}"
-    local max_prefetch_depth="${16}"
-    local bootstrap_next_line="${17}"
+    local l1d_size="$5"
+    local l1d_assoc="$6"
+    local l2_size="$7"
+    local l2_assoc="$8"
+    local prefetch_buffer_lines="$9"
+    local stream_slots="${10}"
+    local max_stream_length="${11}"
+    local epoch_reads="${12}"
+    local stream_lifetime="${13}"
+    local prefetch_latency="${14}"
+    local miss_latency="${15}"
+    local l2_hit_latency="${16}"
+    local hit_latency="${17}"
+    local write_latency="${18}"
+    local base_cost="${19}"
+    local max_prefetch_depth="${20}"
+    local bootstrap_next_line="${21}"
 
     local -a benchmark_cmd=()
     case "$benchmark" in
@@ -259,29 +310,21 @@ run_one() {
                 benchmark_cmd+=("${HMMER_ARGS_ARR[@]}")
             fi
             ;;
+        dealII)
+            benchmark_cmd=("$DEALII_BIN")
+            if [ "${#DEALII_ARGS_ARR[@]}" -gt 0 ]; then
+                benchmark_cmd+=("${DEALII_ARGS_ARR[@]}")
+            fi
+            ;;
         *)
             emit_csv_row \
-                "$benchmark" \
-                "error" \
-                "unknown_benchmark" \
-                "$policy" \
-                "$line_size" \
-                "$demand_cache_lines" \
-                "$prefetch_buffer_lines" \
-                "$stream_slots" \
-                "$max_stream_length" \
-                "$epoch_reads" \
-                "$stream_lifetime" \
-                "$prefetch_latency" \
-                "$miss_latency" \
-                "$hit_latency" \
-                "$write_latency" \
-                "$base_cost" \
-                "$max_prefetch_depth" \
-                "$bootstrap_next_line" \
-                "0" \
-                "0" \
-                "0.000000" >"$row_file"
+                "$benchmark" "error" "unknown_benchmark" "$policy" \
+                "$line_size" "$l1d_size" "$l1d_assoc" "$l2_size" "$l2_assoc" \
+                "$prefetch_buffer_lines" "$stream_slots" "$max_stream_length" \
+                "$epoch_reads" "$stream_lifetime" "$prefetch_latency" \
+                "$miss_latency" "$l2_hit_latency" "$hit_latency" "$write_latency" \
+                "$base_cost" "$max_prefetch_depth" "$bootstrap_next_line" \
+                "0" "0" "0.000000" "0.0000" "0.0000" >"$row_file"
             return 0
             ;;
     esac
@@ -294,7 +337,10 @@ run_one() {
         -t "$PIN_TOOL"
         -policy "$policy"
         -line_size "$line_size"
-        -demand_cache_lines "$demand_cache_lines"
+        -l1d_size "$l1d_size"
+        -l1d_assoc "$l1d_assoc"
+        -l2_size "$l2_size"
+        -l2_assoc "$l2_assoc"
         -prefetch_buffer_lines "$prefetch_buffer_lines"
         -stream_slots "$stream_slots"
         -max_stream_length "$max_stream_length"
@@ -302,6 +348,7 @@ run_one() {
         -stream_lifetime "$stream_lifetime"
         -prefetch_latency "$prefetch_latency"
         -miss_latency "$miss_latency"
+        -l2_hit_latency "$l2_hit_latency"
         -hit_latency "$hit_latency"
         -write_latency "$write_latency"
         -base_cost "$base_cost"
@@ -317,27 +364,13 @@ run_one() {
         printf '%s\n' "Pin run failed for benchmark=$benchmark policy=$policy" >&2
         printf '%s\n' "$raw_output" >&2
         emit_csv_row \
-            "$benchmark" \
-            "error" \
-            "pin_failed" \
-            "$policy" \
-            "$line_size" \
-            "$demand_cache_lines" \
-            "$prefetch_buffer_lines" \
-            "$stream_slots" \
-            "$max_stream_length" \
-            "$epoch_reads" \
-            "$stream_lifetime" \
-            "$prefetch_latency" \
-            "$miss_latency" \
-            "$hit_latency" \
-            "$write_latency" \
-            "$base_cost" \
-            "$max_prefetch_depth" \
-            "$bootstrap_knob" \
-            "0" \
-            "0" \
-            "0.000000" >"$row_file"
+            "$benchmark" "error" "pin_failed" "$policy" \
+            "$line_size" "$l1d_size" "$l1d_assoc" "$l2_size" "$l2_assoc" \
+            "$prefetch_buffer_lines" "$stream_slots" "$max_stream_length" \
+            "$epoch_reads" "$stream_lifetime" "$prefetch_latency" \
+            "$miss_latency" "$l2_hit_latency" "$hit_latency" "$write_latency" \
+            "$base_cost" "$max_prefetch_depth" "$bootstrap_knob" \
+            "0" "0" "0.000000" "0.0000" "0.0000" >"$row_file"
         return 0
     fi
 
@@ -349,27 +382,13 @@ run_one() {
         printf '%s\n' "Failed to parse Pin output for benchmark=$benchmark policy=$policy" >&2
         printf '%s\n' "$raw_output" >&2
         emit_csv_row \
-            "$benchmark" \
-            "error" \
-            "parse_failed" \
-            "$policy" \
-            "$line_size" \
-            "$demand_cache_lines" \
-            "$prefetch_buffer_lines" \
-            "$stream_slots" \
-            "$max_stream_length" \
-            "$epoch_reads" \
-            "$stream_lifetime" \
-            "$prefetch_latency" \
-            "$miss_latency" \
-            "$hit_latency" \
-            "$write_latency" \
-            "$base_cost" \
-            "$max_prefetch_depth" \
-            "$bootstrap_knob" \
-            "0" \
-            "0" \
-            "0.000000" >"$row_file"
+            "$benchmark" "error" "parse_failed" "$policy" \
+            "$line_size" "$l1d_size" "$l1d_assoc" "$l2_size" "$l2_assoc" \
+            "$prefetch_buffer_lines" "$stream_slots" "$max_stream_length" \
+            "$epoch_reads" "$stream_lifetime" "$prefetch_latency" \
+            "$miss_latency" "$l2_hit_latency" "$hit_latency" "$write_latency" \
+            "$base_cost" "$max_prefetch_depth" "$bootstrap_knob" \
+            "0" "0" "0.000000" "0.0000" "0.0000" >"$row_file"
         return 0
     fi
 
@@ -383,31 +402,82 @@ run_one() {
         }
     ')"
 
+    local accuracy coverage
+    accuracy="$(extract_selected_accuracy <<<"$raw_output")"
+    coverage="$(extract_selected_coverage <<<"$raw_output")"
+    [ -z "$accuracy" ] && accuracy="0.0000"
+    [ -z "$coverage" ] && coverage="0.0000"
+
     emit_csv_row \
-        "$benchmark" \
-        "ok" \
-        "ok" \
-        "$policy" \
-        "$line_size" \
-        "$demand_cache_lines" \
-        "$prefetch_buffer_lines" \
-        "$stream_slots" \
-        "$max_stream_length" \
-        "$epoch_reads" \
-        "$stream_lifetime" \
-        "$prefetch_latency" \
-        "$miss_latency" \
-        "$hit_latency" \
-        "$write_latency" \
-        "$base_cost" \
-        "$max_prefetch_depth" \
-        "$bootstrap_knob" \
-        "$selected_cycles" \
-        "$baseline_cycles" \
-        "$speedup" >"$row_file"
+        "$benchmark" "ok" "ok" "$policy" \
+        "$line_size" "$l1d_size" "$l1d_assoc" "$l2_size" "$l2_assoc" \
+        "$prefetch_buffer_lines" "$stream_slots" "$max_stream_length" \
+        "$epoch_reads" "$stream_lifetime" "$prefetch_latency" \
+        "$miss_latency" "$l2_hit_latency" "$hit_latency" "$write_latency" \
+        "$base_cost" "$max_prefetch_depth" "$bootstrap_knob" \
+        "$selected_cycles" "$baseline_cycles" "$speedup" \
+        "$accuracy" "$coverage" >"$row_file"
+}
+
+make_config_key() {
+    printf '%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s' \
+        "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" \
+        "${10}" "${11}" "${12}" "${13}" "${14}" "${15}" "${16}" "${17}" "${18}" "${19}" "${20}"
+}
+
+load_completed_keys() {
+    COMPLETED_KEYS=()
+    if [ -n "${RESUME_CSV:-}" ] && [ -f "$RESUME_CSV" ]; then
+        while IFS=, read -r bm st re po ls l1s l1a l2s l2a pb ss ml er sl pl mi l2h hi wl bc md bn _sc _bc _sp _acc _cov; do
+            [ "$bm" = "benchmark" ] && continue
+            [ "$st" != "ok" ] && continue
+            local key
+            key="$(make_config_key "$bm" "$po" "$ls" "$l1s" "$l1a" "$l2s" "$l2a" "$pb" "$ss" "$ml" "$er" "$sl" "$pl" "$mi" "$l2h" "$hi" "$wl" "$bc" "$md" "$bn")"
+            COMPLETED_KEYS["$key"]=1
+        done < "$RESUME_CSV"
+        local n="${#COMPLETED_KEYS[@]}"
+        printf 'resume: loaded %d completed configurations from %s\n' "$n" "$RESUME_CSV" >&2
+    fi
+}
+
+is_already_done() {
+    local key
+    key="$(make_config_key "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" \
+        "${10}" "${11}" "${12}" "${13}" "${14}" "${15}" "${16}" "${17}" "${18}" "${19}" "${20}")"
+    [ -n "${COMPLETED_KEYS[$key]+x}" ]
 }
 
 schedule_current_config() {
+    local bootstrap_knob
+    bootstrap_knob="$(normalize_bool "$CURRENT_BOOTSTRAP_NEXT_LINE")"
+
+    if is_already_done \
+        "$CURRENT_BENCHMARK" \
+        "$CURRENT_POLICY" \
+        "$CURRENT_LINE_SIZE" \
+        "$CURRENT_L1D_SIZE" \
+        "$CURRENT_L1D_ASSOC" \
+        "$CURRENT_L2_SIZE" \
+        "$CURRENT_L2_ASSOC" \
+        "$CURRENT_PREFETCH_BUFFER_LINES" \
+        "$CURRENT_STREAM_SLOTS" \
+        "$CURRENT_MAX_STREAM_LENGTH" \
+        "$CURRENT_EPOCH_READS" \
+        "$CURRENT_STREAM_LIFETIME" \
+        "$CURRENT_PREFETCH_LATENCY" \
+        "$CURRENT_MISS_LATENCY" \
+        "$CURRENT_L2_HIT_LATENCY" \
+        "$CURRENT_HIT_LATENCY" \
+        "$CURRENT_WRITE_LATENCY" \
+        "$CURRENT_BASE_COST" \
+        "$CURRENT_MAX_PREFETCH_DEPTH" \
+        "$bootstrap_knob"; then
+        skipped_jobs=$((skipped_jobs + 1))
+        log_progress "skipped(done)" "$skipped_jobs" "$active_jobs" \
+            "$(format_job_label "$CURRENT_BENCHMARK" "$CURRENT_POLICY" "$CURRENT_STREAM_SLOTS" "$CURRENT_MAX_STREAM_LENGTH" "$CURRENT_MAX_PREFETCH_DEPTH" "$CURRENT_BOOTSTRAP_NEXT_LINE")"
+        return
+    fi
+
     wait_for_slot
 
     local row_file="$WORKDIR/row_${job_index}.csv"
@@ -426,7 +496,10 @@ schedule_current_config() {
         "$CURRENT_BENCHMARK" \
         "$CURRENT_POLICY" \
         "$CURRENT_LINE_SIZE" \
-        "$CURRENT_DEMAND_CACHE_LINES" \
+        "$CURRENT_L1D_SIZE" \
+        "$CURRENT_L1D_ASSOC" \
+        "$CURRENT_L2_SIZE" \
+        "$CURRENT_L2_ASSOC" \
         "$CURRENT_PREFETCH_BUFFER_LINES" \
         "$CURRENT_STREAM_SLOTS" \
         "$CURRENT_MAX_STREAM_LENGTH" \
@@ -434,6 +507,7 @@ schedule_current_config() {
         "$CURRENT_STREAM_LIFETIME" \
         "$CURRENT_PREFETCH_LATENCY" \
         "$CURRENT_MISS_LATENCY" \
+        "$CURRENT_L2_HIT_LATENCY" \
         "$CURRENT_HIT_LATENCY" \
         "$CURRENT_WRITE_LATENCY" \
         "$CURRENT_BASE_COST" \
@@ -442,6 +516,7 @@ schedule_current_config() {
 
     pids+=("$!")
     job_labels+=("$job_label")
+    job_row_indices+=("$job_index")
     active_jobs=$((active_jobs + 1))
     scheduled_jobs=$((scheduled_jobs + 1))
     log_progress "started" "$scheduled_jobs" "$active_jobs" "$job_label"
@@ -530,11 +605,13 @@ PIN_TOOL="${PIN_TOOL:-$DEFAULT_PIN_TOOL}"
 BENCHMARK_ROOT="${BENCHMARK_ROOT:-$DEFAULT_BENCHMARK_ROOT}"
 LIBQUANTUM_BIN="${LIBQUANTUM_BIN:-$BENCHMARK_ROOT/libquantum_O3}"
 HMMER_BIN="${HMMER_BIN:-$BENCHMARK_ROOT/hmmer_O3}"
+DEALII_BIN="${DEALII_BIN:-$BENCHMARK_ROOT/dealII_O3}"
 
 [ -x "$PIN_BIN" ] || die "Pin launcher not found or not executable: $PIN_BIN"
 [ -f "$PIN_TOOL" ] || die "Pintool shared object not found: $PIN_TOOL"
 [ -x "$LIBQUANTUM_BIN" ] || die "libquantum benchmark not found or not executable: $LIBQUANTUM_BIN"
 [ -x "$HMMER_BIN" ] || die "hmmer benchmark not found or not executable: $HMMER_BIN"
+[ -x "$DEALII_BIN" ] || die "dealII benchmark not found or not executable: $DEALII_BIN"
 
 MAX_JOBS="${MAX_JOBS:-4}"
 MAX_INSTRUCTIONS="${MAX_INSTRUCTIONS:-0}"
@@ -556,10 +633,13 @@ case "$MAX_INSTRUCTIONS" in
         ;;
 esac
 
-BENCHMARK_VALUES_ARR=(${BENCHMARK_VALUES:-${BENCHMARKS:-libquantum hmmer}})
+BENCHMARK_VALUES_ARR=(${BENCHMARK_VALUES:-${BENCHMARKS:-libquantum hmmer dealII}})
 POLICY_VALUES_ARR=(${POLICY_VALUES:-${POLICIES:-adaptive}})
 LINE_SIZE_VALUES_ARR=(${LINE_SIZE_VALUES:-${LINE_SIZES:-64}})
-DEMAND_CACHE_LINES_VALUES_ARR=(${DEMAND_CACHE_LINES_VALUES:-${DEMAND_CACHE_LINES_LIST:-4096}})
+L1D_SIZE_VALUES_ARR=(${L1D_SIZE_VALUES:-4096})
+L1D_ASSOC_VALUES_ARR=(${L1D_ASSOC_VALUES:-1})
+L2_SIZE_VALUES_ARR=(${L2_SIZE_VALUES:-1048576})
+L2_ASSOC_VALUES_ARR=(${L2_ASSOC_VALUES:-1})
 PREFETCH_BUFFER_LINES_VALUES_ARR=(${PREFETCH_BUFFER_LINES_VALUES:-${PREFETCH_BUFFER_LINES_LIST:-16}})
 STREAM_SLOTS_VALUES_ARR=(${STREAM_SLOTS_VALUES:-${STREAM_SLOTS_LIST:-8}})
 MAX_STREAM_LENGTH_VALUES_ARR=(${MAX_STREAM_LENGTH_VALUES:-${MAX_STREAM_LENGTHS:-16}})
@@ -567,6 +647,7 @@ EPOCH_READS_VALUES_ARR=(${EPOCH_READS_VALUES:-${EPOCH_READS_LIST:-2000}})
 STREAM_LIFETIME_VALUES_ARR=(${STREAM_LIFETIME_VALUES:-${STREAM_LIFETIMES:-256}})
 PREFETCH_LATENCY_VALUES_ARR=(${PREFETCH_LATENCY_VALUES:-${PREFETCH_LATENCY_LIST:-8}})
 MISS_LATENCY_VALUES_ARR=(${MISS_LATENCY_VALUES:-${MISS_LATENCY_LIST:-80}})
+L2_HIT_LATENCY_VALUES_ARR=(${L2_HIT_LATENCY_VALUES:-10})
 HIT_LATENCY_VALUES_ARR=(${HIT_LATENCY_VALUES:-${HIT_LATENCY_LIST:-1}})
 WRITE_LATENCY_VALUES_ARR=(${WRITE_LATENCY_VALUES:-${WRITE_LATENCY_LIST:-1}})
 BASE_COST_VALUES_ARR=(${BASE_COST_VALUES:-${BASE_COST_LIST:-1}})
@@ -585,11 +666,20 @@ else
     HMMER_ARGS_ARR=("$BENCHMARK_ROOT/inputs/nph3.hmm")
 fi
 
+if [ -n "${DEALII_ARGS:-}" ]; then
+    DEALII_ARGS_ARR=(${DEALII_ARGS})
+else
+    DEALII_ARGS_ARR=()
+fi
+
 PARAM_NAMES=(
     benchmark
     policy
     line_size
-    demand_cache_lines
+    l1d_size
+    l1d_assoc
+    l2_size
+    l2_assoc
     prefetch_buffer_lines
     stream_slots
     max_stream_length
@@ -597,6 +687,7 @@ PARAM_NAMES=(
     stream_lifetime
     prefetch_latency
     miss_latency
+    l2_hit_latency
     hit_latency
     write_latency
     base_cost
@@ -617,15 +708,30 @@ results_csv="$WORKDIR/results.csv"
 row_files=()
 pids=()
 job_labels=()
+job_row_indices=()
 active_jobs=0
 scheduled_jobs=0
 completed_jobs=0
+skipped_jobs=0
 job_index=0
+
+# ── Resume support ────────────────────────────────────────────────
+# If the output file already exists, load completed keys from it so
+# we can skip configs that finished in a previous run.
+declare -A COMPLETED_KEYS
+RESUME_CSV=""
+if [ -n "$output_file" ] && [ -f "$output_file" ]; then
+    RESUME_CSV="$output_file"
+fi
+load_completed_keys
 
 CURRENT_BENCHMARK=""
 CURRENT_POLICY=""
 CURRENT_LINE_SIZE=""
-CURRENT_DEMAND_CACHE_LINES=""
+CURRENT_L1D_SIZE=""
+CURRENT_L1D_ASSOC=""
+CURRENT_L2_SIZE=""
+CURRENT_L2_ASSOC=""
 CURRENT_PREFETCH_BUFFER_LINES=""
 CURRENT_STREAM_SLOTS=""
 CURRENT_MAX_STREAM_LENGTH=""
@@ -633,17 +739,28 @@ CURRENT_EPOCH_READS=""
 CURRENT_STREAM_LIFETIME=""
 CURRENT_PREFETCH_LATENCY=""
 CURRENT_MISS_LATENCY=""
+CURRENT_L2_HIT_LATENCY=""
 CURRENT_HIT_LATENCY=""
 CURRENT_WRITE_LATENCY=""
 CURRENT_BASE_COST=""
 CURRENT_MAX_PREFETCH_DEPTH=""
 CURRENT_BOOTSTRAP_NEXT_LINE=""
 
-printf 'sweeping %d configurations with up to %d concurrent jobs\n' "$total_jobs" "$MAX_JOBS" >&2
+new_jobs=$((total_jobs - ${#COMPLETED_KEYS[@]}))
+printf 'sweeping %d total configurations (%d already done, %d to run) with up to %d concurrent jobs\n' \
+    "$total_jobs" "${#COMPLETED_KEYS[@]}" "$new_jobs" "$MAX_JOBS" >&2
 
-printf '%s\n' \
-    'benchmark,status,reason,policy,line_size,demand_cache_lines,prefetch_buffer_lines,stream_slots,max_stream_length,epoch_reads,stream_lifetime,prefetch_latency,miss_latency,hit_latency,write_latency,base_cost,max_prefetch_depth,bootstrap_next_line,selected_cycles,baseline_cycles,speedup' \
-    >"$results_csv"
+CSV_HEADER='benchmark,status,reason,policy,line_size,l1d_size,l1d_assoc,l2_size,l2_assoc,prefetch_buffer_lines,stream_slots,max_stream_length,epoch_reads,stream_lifetime,prefetch_latency,miss_latency,l2_hit_latency,hit_latency,write_latency,base_cost,max_prefetch_depth,bootstrap_next_line,selected_cycles,baseline_cycles,speedup,accuracy,coverage'
+
+# If resuming, keep the existing file; otherwise start fresh.
+if [ -n "$output_file" ]; then
+    mkdir -p "$(dirname "$output_file")"
+    if [ ! -f "$output_file" ]; then
+        printf '%s\n' "$CSV_HEADER" >"$output_file"
+    fi
+fi
+
+printf '%s\n' "$CSV_HEADER" >"$results_csv"
 
 walk_configs 0
 
@@ -654,13 +771,13 @@ while [ "$active_jobs" -gt 0 ]; do
     sleep "${PROGRESS_POLL_INTERVAL:-0.25}"
 done
 
+# Collect all rows into the working-dir CSV (output file already has them
+# from the immediate flush in reap_finished_jobs).
 for row_file in "${row_files[@]}"; do
-    cat "$row_file" >>"$results_csv"
+    [ -f "$row_file" ] && cat "$row_file" >>"$results_csv"
 done
 
 if [ -n "$output_file" ]; then
-    mkdir -p "$(dirname "$output_file")"
-    cp "$results_csv" "$output_file"
     final_csv="$output_file"
 else
     final_csv="$results_csv"

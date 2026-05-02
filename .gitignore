@@ -1,11 +1,23 @@
+# Build artifacts
 build/
 pintool/obj-*/
+ali/pintool/obj-*/
 *.o
 *.so
-.venv/
-logs/
-smoke_test.csv
-stream_buffer_experiments.csv
-plots/*.png
-plots/hardware_cost_summary.csv
 
+# Python virtualenv
+.venv/
+
+# Logs (always transient)
+logs/
+
+# dealII run-time output artifacts
+*.gmv
+*.eps
+
+# NFS lockfiles
+.nfs*
+
+# Transient root-level smoke outputs (real deliverables live in ali/results/)
+/smoke_test.csv
+/smoke_verify.csv
