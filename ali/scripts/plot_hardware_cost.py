@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
-"""Plot hardware cost (bits) vs. performance tradeoff.
+"""Plot hardware cost breakdown for the four distinct configurations swept.
 
 Hardware cost is estimated from configuration parameters:
   Stream table  = stream_slots * (1 valid + 1 direction + 46 addr + 16 length + 16 lifetime + 16 touch)
   Prefetch buf  = prefetch_buffer_lines * (46 addr + 32 ready_time + 1 used + 1 claimed)
   Histogram     = 2 * (max_stream_length + 2) * 16  [current + next epoch]
+
+Cost depends only on (stream_slots, max_stream_length) — not on policy or depth.
 """
 
-import csv
 import matplotlib.pyplot as plt
-from collections import defaultdict
 from pathlib import Path
 
-CSV_PATH = "results/stream_buffer_experiments.csv"
 OUTDIR = Path("plots")
 
 ADDR_BITS = 46
@@ -21,67 +20,60 @@ LIFETIME_BITS = 16
 TOUCH_BITS = 16
 READY_TIME_BITS = 32
 COUNTER_BITS = 16
+PREFETCH_BUFFER_LINES = 16
 
 
-def compute_hardware_bits(row):
-    stream_table = int(row["stream_slots"]) * (1 + 1 + ADDR_BITS + LENGTH_BITS + LIFETIME_BITS + TOUCH_BITS)
-    prefetch_buf = int(row["prefetch_buffer_lines"]) * (ADDR_BITS + READY_TIME_BITS + 1 + 1)
-    histogram = 2 * (int(row["max_stream_length"]) + 2) * COUNTER_BITS
-    return stream_table + prefetch_buf + histogram
-
-
-def read_csv(path):
-    rows = []
-    with open(path, newline="") as f:
-        for row in csv.DictReader(f):
-            if row["status"] != "ok":
-                continue
-            row["speedup"] = float(row["speedup"])
-            row["hardware_bits"] = compute_hardware_bits(row)
-            rows.append(row)
-    return rows
+def compute_components(slots, max_len):
+    stream_table = slots * (1 + 1 + ADDR_BITS + LENGTH_BITS + LIFETIME_BITS + TOUCH_BITS)
+    prefetch_buf = PREFETCH_BUFFER_LINES * (ADDR_BITS + READY_TIME_BITS + 1 + 1)
+    histogram = 2 * (max_len + 2) * COUNTER_BITS
+    return stream_table, prefetch_buf, histogram
 
 
 def main():
     OUTDIR.mkdir(exist_ok=True)
-    rows = read_csv(CSV_PATH)
-    benchmarks = sorted(set(r["benchmark"] for r in rows))
-    print(f"Loaded {len(rows)} ok rows, benchmarks: {benchmarks}")
 
-    fig, axes = plt.subplots(len(benchmarks), 1, figsize=(8, 5 * len(benchmarks)))
-    if len(benchmarks) == 1:
-        axes = [axes]
+    configs = [
+        (4, 8),
+        (4, 32),
+        (8, 8),
+        (8, 32),
+    ]
+    labels = [f"slots={s}\nmax_len={m}" for s, m in configs]
 
-    for ax, benchmark in zip(axes, benchmarks):
-        bench_rows = [r for r in rows if r["benchmark"] == benchmark]
-        for policy in sorted(set(r["policy"] for r in bench_rows)):
-            policy_rows = [r for r in bench_rows if r["policy"] == policy]
-            xs = [r["hardware_bits"] for r in policy_rows]
-            ys = [r["speedup"] for r in policy_rows]
-            ax.scatter(xs, ys, label=policy, alpha=0.7, s=40)
+    stream_costs, prefetch_costs, hist_costs = [], [], []
+    for slots, max_len in configs:
+        s, p, h = compute_components(slots, max_len)
+        stream_costs.append(s)
+        prefetch_costs.append(p)
+        hist_costs.append(h)
 
-        ax.set_xlabel("Hardware Cost (bits)")
-        ax.set_ylabel("Speedup vs. Baseline")
-        ax.set_title(f"{benchmark}: Hardware Cost vs. Performance")
-        ax.legend()
-        ax.grid(True, linestyle="--", alpha=0.5)
+    x = range(len(configs))
+    fig, ax = plt.subplots(figsize=(7, 4))
+
+    bars_s = ax.bar(x, stream_costs, label="Stream table", color="steelblue")
+    bars_p = ax.bar(x, prefetch_costs, bottom=stream_costs, label="Prefetch buffer", color="tomato")
+    bars_h = ax.bar(x, hist_costs,
+                    bottom=[s + p for s, p in zip(stream_costs, prefetch_costs)],
+                    label="Histogram (2 epochs)", color="mediumseagreen")
+
+    # Annotate total on top of each bar
+    for i, (s, p, h) in enumerate(zip(stream_costs, prefetch_costs, hist_costs)):
+        total = s + p + h
+        ax.text(i, total + 20, f"{total} b", ha="center", va="bottom", fontsize=9)
+
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels, fontsize=9)
+    ax.set_ylabel("Storage (bits)")
+    ax.set_title("Hardware Cost Breakdown by Configuration")
+    ax.legend(loc="upper left")
+    ax.set_ylim(0, max(s + p + h for s, p, h in zip(stream_costs, prefetch_costs, hist_costs)) * 1.15)
+    ax.grid(axis="y", linestyle="--", alpha=0.5)
 
     plt.tight_layout()
     fig.savefig(OUTDIR / "hardware_cost_vs_speedup.png", dpi=200)
     plt.close(fig)
     print("  wrote hardware_cost_vs_speedup.png")
-
-    # Summary CSV grouped by (benchmark, policy, hardware_bits)
-    buckets = defaultdict(list)
-    for row in rows:
-        buckets[(row["benchmark"], row["policy"], row["hardware_bits"])].append(row["speedup"])
-
-    with open(OUTDIR / "hardware_cost_summary.csv", "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["benchmark", "policy", "hardware_bits", "speedup"])
-        for (bench, policy, hw), speeds in sorted(buckets.items()):
-            writer.writerow([bench, policy, hw, sum(speeds) / len(speeds)])
-    print("  wrote hardware_cost_summary.csv")
 
 
 if __name__ == "__main__":

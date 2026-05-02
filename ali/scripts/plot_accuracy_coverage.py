@@ -65,14 +65,16 @@ def plot_heatmap(rows, benchmark, value_col, title, outdir):
 
 def plot_line(rows, benchmark, value_col, ylabel, outdir):
     fig, ax = plt.subplots()
-    slots_groups = defaultdict(list)
+    groups = defaultdict(list)
     for row in rows:
-        slots_groups[row["stream_slots"]].append(row)
-    for slots in sorted(slots_groups.keys()):
-        group = sorted(slots_groups[slots], key=lambda r: r["max_prefetch_depth"])
+        key = (row["stream_slots"], int(row["max_stream_length"]))
+        groups[key].append(row)
+    for key in sorted(groups.keys()):
+        slots, stream_len = key
+        group = sorted(groups[key], key=lambda r: r["max_prefetch_depth"])
         ax.plot([r["max_prefetch_depth"] for r in group],
                 [r[value_col] for r in group],
-                marker="o", label=f"slots={slots}")
+                marker="o", label=f"slots={slots}, max_len={stream_len}")
     ax.set_xlabel("Max Prefetch Depth")
     ax.set_ylabel(ylabel)
     ax.set_title(f"{benchmark}: {ylabel} vs Max Prefetch Depth")
