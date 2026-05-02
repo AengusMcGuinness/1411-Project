@@ -33,6 +33,8 @@ DEFAULT_INPUTS = [
     "victim_dm_misses.csv",
     "libquantum_dm_vs_8way.csv",
     "hmmer_dm_vs_8way.csv",
+    "stream_eff_misses.csv",
+    "stream_l2_requests.csv",
 ]
 
 
@@ -215,6 +217,50 @@ def plot_compare_sweep(csv_path: Path, out_dir: Path, benchmark_name: str) -> No
     )
 
 
+def plot_stream_eff_misses(csv_path: Path, out_dir: Path) -> None:
+    """Figure 2: effective L1D misses (L1D misses − stream-buffer hits) vs depth."""
+    plot_multi_series(
+        csv_path,
+        out_dir,
+        title="Stream Buffer: Effective L1D Misses vs Prefetch Depth",
+        xlabel="Stream Buffer Depth (lines prefetched)",
+        ylabel="Effective L1D Misses  (L1D misses − SB hits)",
+    )
+
+
+def plot_stream_l2_requests(csv_path: Path, out_dir: Path) -> None:
+    """Figure 3: total L2 requests (demand + prefetch traffic) vs depth."""
+    plot_multi_series(
+        csv_path,
+        out_dir,
+        title="Stream Buffer: Total L2 Requests vs Prefetch Depth",
+        xlabel="Stream Buffer Depth (lines prefetched)",
+        ylabel="Total L2 Requests  (demand + prefetch)",
+    )
+
+
+def plot_streams_eff_misses(csv_path: Path, out_dir: Path) -> None:
+    """Effective L1D misses vs number of concurrent streams (depth=1)."""
+    plot_multi_series(
+        csv_path,
+        out_dir,
+        title="Stream Buffer: Effective L1D Misses vs Number of Streams",
+        xlabel="Number of Concurrent Streams (S)",
+        ylabel="Effective L1D Misses  (L1D misses − SB hits)",
+    )
+
+
+def plot_streams_l2_requests(csv_path: Path, out_dir: Path) -> None:
+    """Total L2 requests vs number of concurrent streams (depth=1)."""
+    plot_multi_series(
+        csv_path,
+        out_dir,
+        title="Stream Buffer: Total L2 Requests vs Number of Streams",
+        xlabel="Number of Concurrent Streams (S)",
+        ylabel="Total L2 Requests  (demand + prefetch)",
+    )
+
+
 def plot_cacti_access_time(csv_path: Path, out_dir: Path) -> None:
     plot_single_series(
         csv_path,
@@ -253,6 +299,18 @@ def plot_file(csv_path: Path, out_dir: Path) -> bool:
         return True
     if stem == "access_time_vs_assoc":
         plot_cacti_access_time(csv_path, out_dir)
+        return True
+    if stem == "stream_eff_misses":
+        plot_stream_eff_misses(csv_path, out_dir)
+        return True
+    if stem == "stream_l2_requests":
+        plot_stream_l2_requests(csv_path, out_dir)
+        return True
+    if stem == "streams_eff_misses":
+        plot_streams_eff_misses(csv_path, out_dir)
+        return True
+    if stem == "streams_l2_requests":
+        plot_streams_l2_requests(csv_path, out_dir)
         return True
 
     header, _ = read_csv(csv_path)

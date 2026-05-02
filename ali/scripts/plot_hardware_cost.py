@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from collections import defaultdict
 from pathlib import Path
 
-CSV_PATH = "stream_buffer_experiments.csv"
+CSV_PATH = "results/stream_buffer_experiments.csv"
 OUTDIR = Path("plots")
 
 ADDR_BITS = 46

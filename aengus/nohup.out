@@ -1,0 +1,160 @@
+[18:44:44] Output directory: /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results
+[18:44:44] Pin tool: /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/obj-intel64/stream.so
+[18:44:44] Config base: /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/config-base
+[18:44:44] Benchmarks: /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/benchmarks/libquantum_O3 and /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/benchmarks/hmmer_O3
+
+[18:44:44] === Associativity Sweep (JOBS=4) ===
+[18:44:44] -> assoc=1 libquantum
+[18:44:44] -> assoc=1 dealII
+[18:44:44] -> assoc=2 libquantum
+[18:44:44] -> assoc=1 hmmer
+[18:48:15] -> assoc=2 hmmer
+[18:48:15] -> assoc=2 dealII
+[18:48:15] -> assoc=4 hmmer
+[18:48:15] -> assoc=4 libquantum
+[18:52:26] -> assoc=4 dealII
+[18:52:26] -> assoc=8 libquantum
+[18:52:26] -> assoc=8 dealII
+[18:52:26] -> assoc=8 hmmer
+[18:57:09] Associativity 1 complete: libquantum=121769710, hmmer=1086911946, dealII=484994368
+[18:57:09] Associativity 2 complete: libquantum=119751074, hmmer=657218266, dealII=430722082
+[18:57:09] Associativity 4 complete: libquantum=119570225, hmmer=236982679, dealII=418809396
+[18:57:09] Associativity 8 complete: libquantum=119547505, hmmer=156947743, dealII=425360189
+Associativity sweep CSV: /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/assoc/assoc_misses.csv
+
+[18:57:09] === Stream Buffer Sweep (direct-mapped L1D, 1 stream, JOBS=4) ===
+[18:57:09] -> stream depth=0 libquantum
+[18:57:09] -> stream depth=0 dealII
+[18:57:09] -> stream depth=1 libquantum
+[18:57:09] -> stream depth=0 hmmer
+[19:00:54] -> stream depth=1 hmmer
+[19:00:54] -> stream depth=1 dealII
+[19:00:54] -> stream depth=2 hmmer
+[19:00:54] -> stream depth=2 libquantum
+[19:05:57] -> stream depth=2 dealII
+[19:05:57] -> stream depth=4 libquantum
+[19:05:57] -> stream depth=4 dealII
+[19:05:57] -> stream depth=4 hmmer
+[19:11:12] -> stream depth=8 libquantum
+[19:11:12] -> stream depth=8 dealII
+[19:11:12] -> stream depth=8 hmmer
+[19:17:44] Stream depth 0: libquantum eff=121200271 L2req=121204522 | hmmer eff=1089349815 L2req=1091088059 | dealII eff=488587529 L2req=525692727
+[19:17:44] Stream depth 1: libquantum eff=2813918 L2req=124038602 | hmmer eff=1061848629 L2req=2130266731 | dealII eff=476963724 L2req=999832393
+[19:17:44] Stream depth 2: libquantum eff=2781862 L2req=126766816 | hmmer eff=1061093631 L2req=3189907621 | dealII eff=481485540 L2req=1489849986
+[19:17:44] Stream depth 4: libquantum eff=2813762 L2req=132479525 | hmmer eff=1062760925 L2req=5320405009 | dealII eff=477022769 L2req=2430902592
+[19:17:44] Stream depth 8: libquantum eff=2813636 L2req=143733460 | hmmer eff=1062569741 L2req=9570217539 | dealII eff=484302817 L2req=4404294345
+Stream buffer CSVs: /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/stream/stream_eff_misses.csv, /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/stream/stream_l2_requests.csv
+
+[19:17:44] === Stream Count Sweep (depth=1, direct-mapped L1D, JOBS=4) ===
+[19:17:44] -> streams=1 libquantum
+[19:17:44] -> streams=1 dealII
+[19:17:44] -> streams=1 hmmer
+[19:17:44] -> streams=2 libquantum
+[19:21:38] -> streams=2 hmmer
+[19:21:38] -> streams=4 libquantum
+[19:21:38] -> streams=2 dealII
+[19:21:38] -> streams=4 hmmer
+[19:26:30] -> streams=4 dealII
+[19:26:30] -> streams=8 libquantum
+[19:26:30] -> streams=8 hmmer
+[19:26:30] -> streams=8 dealII
+[19:30:53] -> streams=16 hmmer
+[19:30:53] -> streams=16 libquantum
+[19:30:53] -> streams=16 dealII
+[19:35:18] Streams 1: libquantum eff=2813579 L2req=124037896 | hmmer eff=1085412049 L2req=2176884106 | dealII eff=478517487 L2req=1002564648
+[19:35:18] Streams 2: libquantum eff=2755780 L2req=124036264 | hmmer eff=1052923679 L2req=2122586654 | dealII eff=480418010 L2req=1013091686
+[19:35:18] Streams 4: libquantum eff=2565229 L2req=123789429 | hmmer eff=1050136142 L2req=2117545605 | dealII eff=464925640 L2req=984445933
+[19:35:18] Streams 8: libquantum eff=2340414 L2req=123565282 | hmmer eff=1034126597 L2req=2100644919 | dealII eff=463358667 L2req=986112423
+[19:35:18] Streams 16: libquantum eff=2208649 L2req=123410124 | hmmer eff=990003098 L2req=2054166774 | dealII eff=456769403 L2req=976129884
+Stream count CSVs: /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/streams/streams_eff_misses.csv, /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/streams/streams_l2_requests.csv
+
+[19:35:18] === 2D Depth x Streams Sweep (direct-mapped L1D, JOBS=4) ===
+[19:35:18] -> 2d depth=0 s=1 libquantum
+[19:35:18] -> 2d depth=0 s=1 hmmer
+[19:35:18] -> 2d depth=0 s=2 libquantum
+[19:35:18] -> 2d depth=0 s=1 dealII
+[19:38:57] -> 2d depth=0 s=4 hmmer
+[19:38:57] -> 2d depth=0 s=2 hmmer
+[19:38:57] -> 2d depth=0 s=4 libquantum
+[19:38:57] -> 2d depth=0 s=2 dealII
+[19:42:58] -> 2d depth=0 s=8 libquantum
+[19:42:58] -> 2d depth=0 s=8 dealII
+[19:42:58] -> 2d depth=0 s=4 dealII
+[19:42:58] -> 2d depth=0 s=8 hmmer
+[19:46:46] -> 2d depth=1 s=1 dealII
+[19:46:46] -> 2d depth=1 s=1 hmmer
+[19:46:46] -> 2d depth=1 s=2 libquantum
+[19:46:46] -> 2d depth=1 s=1 libquantum
+[19:51:02] -> 2d depth=1 s=4 libquantum
+[19:51:02] -> 2d depth=1 s=2 hmmer
+[19:51:02] -> 2d depth=1 s=4 hmmer
+[19:51:02] -> 2d depth=1 s=2 dealII
+[19:55:53] -> 2d depth=1 s=8 libquantum
+[19:55:53] -> 2d depth=1 s=8 dealII
+[19:55:53] -> 2d depth=1 s=4 dealII
+[19:55:53] -> 2d depth=1 s=8 hmmer
+[20:00:22] -> 2d depth=2 s=1 dealII
+[20:00:22] -> 2d depth=2 s=1 libquantum
+[20:00:22] -> 2d depth=2 s=1 hmmer
+[20:00:22] -> 2d depth=2 s=2 libquantum
+[20:03:36] -> 2d depth=2 s=4 libquantum
+[20:03:36] -> 2d depth=2 s=4 hmmer
+[20:03:36] -> 2d depth=2 s=2 hmmer
+[20:03:36] -> 2d depth=2 s=2 dealII
+[20:09:03] -> 2d depth=2 s=4 dealII
+[20:09:03] -> 2d depth=2 s=8 hmmer
+[20:09:03] -> 2d depth=2 s=8 dealII
+[20:09:03] -> 2d depth=2 s=8 libquantum
+[20:13:03] -> 2d depth=4 s=1 libquantum
+[20:13:03] -> 2d depth=4 s=2 libquantum
+[20:13:03] -> 2d depth=4 s=1 dealII
+[20:13:03] -> 2d depth=4 s=1 hmmer
+[20:17:15] -> 2d depth=4 s=2 hmmer
+[20:17:15] -> 2d depth=4 s=4 hmmer
+[20:17:15] -> 2d depth=4 s=4 libquantum
+[20:17:15] -> 2d depth=4 s=2 dealII
+[20:23:14] -> 2d depth=4 s=8 hmmer
+[20:23:14] -> 2d depth=4 s=8 libquantum
+[20:23:14] -> 2d depth=4 s=8 dealII
+[20:23:14] -> 2d depth=4 s=4 dealII
+[20:29:00] -> 2d depth=8 s=1 dealII
+[20:29:00] -> 2d depth=8 s=1 hmmer
+[20:29:00] -> 2d depth=8 s=2 libquantum
+[20:29:00] -> 2d depth=8 s=1 libquantum
+[20:33:41] -> 2d depth=8 s=2 hmmer
+[20:33:41] -> 2d depth=8 s=2 dealII
+[20:33:41] -> 2d depth=8 s=4 hmmer
+[20:33:41] -> 2d depth=8 s=4 libquantum
+[20:41:17] -> 2d depth=8 s=8 hmmer
+[20:41:17] -> 2d depth=8 s=4 dealII
+[20:41:17] -> 2d depth=8 s=8 dealII
+[20:41:17] -> 2d depth=8 s=8 libquantum
+[20:48:30] 2D depth=0 s=1: lq_eff=121199137 lq_l2=121203388 | hm_eff=1088460173 hm_l2=1090198417 | dl_eff=490278521 dl_l2=527383719
+[20:48:30] 2D depth=0 s=2: lq_eff=121220343 lq_l2=121224594 | hm_eff=1065416061 hm_l2=1067154305 | dl_eff=485751703 dl_l2=522856901
+[20:48:30] 2D depth=0 s=4: lq_eff=121219908 lq_l2=121224159 | hm_eff=1085455659 hm_l2=1087193903 | dl_eff=484146869 dl_l2=521252067
+[20:48:30] 2D depth=0 s=8: lq_eff=121221736 lq_l2=121225987 | hm_eff=1066265545 hm_l2=1068003789 | dl_eff=491144180 dl_l2=528249378
+[20:48:30] 2D depth=1 s=1: lq_eff=3304065 lq_l2=125026252 | hm_eff=1060494517 hm_l2=2127613135 | dl_eff=481408908 dl_l2=1008533430
+[20:48:30] 2D depth=1 s=2: lq_eff=2751942 lq_l2=124027772 | hm_eff=1054364785 hm_l2=2124987551 | dl_eff=471625290 dl_l2=994768703
+[20:48:30] 2D depth=1 s=4: lq_eff=2565495 lq_l2=123789942 | hm_eff=1054547571 hm_l2=2126555526 | dl_eff=470251381 dl_l2=996833482
+[20:48:30] 2D depth=1 s=8: lq_eff=2369289 lq_l2=123573071 | hm_eff=1034126597 hm_l2=2100644919 | dl_eff=477679915 dl_l2=1016150041
+[20:48:30] 2D depth=2 s=1: lq_eff=4821415 lq_l2=132883449 | hm_eff=1062311280 hm_l2=3194050289 | dl_eff=494001466 dl_l2=1527987228
+[20:48:30] 2D depth=2 s=2: lq_eff=2717062 lq_l2=126659670 | hm_eff=1053565727 hm_l2=3177622621 | dl_eff=472184669 dl_l2=1467628311
+[20:48:30] 2D depth=2 s=4: lq_eff=2571129 lq_l2=126345350 | hm_eff=1046738357 hm_l2=3158034270 | dl_eff=477808869 dl_l2=1490771968
+[20:48:30] 2D depth=2 s=8: lq_eff=2372424 lq_l2=125970260 | hm_eff=1037739672 hm_l2=3144840653 | dl_eff=461586079 dl_l2=1444560406
+[20:48:30] 2D depth=4 s=1: lq_eff=2849377 lq_l2=132674885 | hm_eff=1063276804 hm_l2=5323234154 | dl_eff=476705873 dl_l2=2429116019
+[20:48:30] 2D depth=4 s=2: lq_eff=2715729 lq_l2=132086730 | hm_eff=1054604191 hm_l2=5289989374 | dl_eff=472820056 dl_l2=2415029074
+[20:48:30] 2D depth=4 s=4: lq_eff=2568633 lq_l2=131476962 | hm_eff=1053616809 hm_l2=5286039846 | dl_eff=470226292 dl_l2=2407312907
+[20:48:30] 2D depth=4 s=8: lq_eff=2366625 lq_l2=130668130 | hm_eff=1039003810 hm_l2=5226582238 | dl_eff=464913923 dl_l2=2388945773
+[20:48:31] 2D depth=8 s=1: lq_eff=2781929 lq_l2=143458567 | hm_eff=1057938152 hm_l2=9528221367 | dl_eff=475428064 dl_l2=4324561953
+[20:48:31] 2D depth=8 s=2: lq_eff=2697338 lq_l2=142781307 | hm_eff=1050568921 hm_l2=9471592549 | dl_eff=474938201 dl_l2=4325161481
+[20:48:31] 2D depth=8 s=4: lq_eff=2581414 lq_l2=141875109 | hm_eff=1065471872 hm_l2=9610433685 | dl_eff=462878481 dl_l2=4221387747
+[20:48:31] 2D depth=8 s=8: lq_eff=2340358 lq_l2=139946875 | hm_eff=1037219687 hm_l2=9367805718 | dl_eff=465073330 dl_l2=4245246069
+2D sweep CSVs: /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/2d/2d_libquantum_eff.csv, /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/2d/2d_hmmer_eff.csv, /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/2d/2d_dealII_eff.csv, /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/2d/2d_libquantum_l2.csv, /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/2d/2d_hmmer_l2.csv, /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/2d/2d_dealII_l2.csv
+
+[20:48:31] === Native LIKWID Captures ===
+[20:48:31] -> native LIKWID capture for libquantum
+Native LIKWID log written to /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/native/libquantum.log
+[20:48:31] -> native LIKWID capture for hmmer
+Native LIKWID log written to /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/native/hmmer.log
+[20:48:31] -> native LIKWID capture for dealII
+Native LIKWID log written to /shared/home/aem515/workspace/strided_prefetcher/final/1411-Project/aengus/sweep_results/native/dealII.log

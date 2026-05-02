@@ -26,8 +26,6 @@ class cache
 public:
     virtual ~cache() {};
 
-    // Access the generic cache.
-    // You might want to override this in L1D to access the victim cache.
     virtual void addressRequest( unsigned long address);
 
     // Get Statistics Methods
@@ -115,7 +113,6 @@ public:
     }
 };
 
-
 class stream_buf;
 
 class l1icache : public cache {
@@ -127,16 +124,12 @@ public:
 
 class l1dcache : public cache {
 public:
-    // An optional stream buffer is probed on every L1D miss before falling
-    // through to L2.
     l1dcache( int blockSize, int totalCacheSize, int associativity, cache *nextLevel,
               stream_buf *streamLevel) :
         cache( blockSize, totalCacheSize, associativity, nextLevel, true),
         streamLevel(streamLevel)
     { }
 
-    // Extend the normal cache miss path so L1D consults the stream buffer
-    // before falling through to L2.
     void addressRequest( unsigned long address);
 
 private:
@@ -150,81 +143,39 @@ public:
     { }
 };
 
-// ---------------------------------------------------------------------------
-// Stream buffer (Jouppi 1990, Section 3)
-//
-// Maintains S independent sequential FIFOs of depth d.  Each stream is
-// represented compactly by a single head address; the remaining d-1 lines
-// are implicitly the contiguous blocks that follow it.
-// ---------------------------------------------------------------------------
+// stream_buf models the stream buffer described in Jouppi's paper.
+// It is a set of N independent sequential FIFO buffers, each holding up to
+// `depth` prefetched cache lines.  On an L1D miss the simulator checks
+// whether the missed block is at the head of any stream.  If so (a stream
+// buffer hit) the line is delivered from the buffer and the stream is
+// advanced by one; the tail line is refetched from the next level to keep
+// the buffer full.  If no stream has the missed block at its head the miss
+// falls through to L2, and a new stream is started from address+blockSize.
 class stream_buf {
 public:
-    stream_buf(int blockSize, int depth, int numStreams, cache *nextLevel)
-        : blockSz(blockSize), depth(depth), nStreams(numStreams),
-          nextLevel(nextLevel), allocClock(0), hits(0), requests(0)
-    {
-        streams = new Stream[nStreams];
-        for( int i = 0; i < nStreams; i++ ) {
-            streams[i].valid = false;
-            streams[i].head  = 0;
-        }
-    }
+    stream_buf(int blockSize, int depth, int numStreams, cache *nextLevel);
+    ~stream_buf();
 
-    ~stream_buf() { delete[] streams; }
+    // Probe all streams for a head-match on address.
+    // On hit: pops the head, prefetches the next tail line, returns true.
+    bool access(unsigned long address);
 
-    // Probe the stream buffer for address.  Returns true on a hit.
-    // On a hit: advance the head and issue one prefetch to keep the buffer full.
-    bool access(unsigned long address)
-    {
-        requests++;
-        unsigned long aligned = align(address);
-        for( int i = 0; i < nStreams; i++ ) {
-            if( streams[i].valid && streams[i].head == aligned ) {
-                hits++;
-                // New tail address that must be fetched to keep depth lines buffered.
-                unsigned long newTail = aligned + (unsigned long)depth * blockSz;
-                // Advance the FIFO head by one block.
-                streams[i].head = aligned + blockSz;
-                // Prefetch the new tail into L2.
-                nextLevel->addressRequest(newTail);
-                return true;
-            }
-        }
-        return false;
-    }
+    // Called after an L1D + stream-buffer miss.  Allocates (or restarts) one
+    // stream starting at address+blockSize, prefetching `depth` lines ahead.
+    void allocate_stream(unsigned long address);
 
-    // Allocate a new stream starting just after `address`.
-    // Selects an invalid slot first; otherwise uses round-robin.
-    // Issues d prefetch requests to L2 for the d lines following address.
-    void allocate_stream(unsigned long address)
-    {
-        unsigned long aligned = align(address);
-        // Find a free slot.
-        int slot = -1;
-        for( int i = 0; i < nStreams; i++ ) {
-            if( !streams[i].valid ) { slot = i; break; }
-        }
-        if( slot == -1 ) {
-            // All slots occupied: round-robin eviction.
-            slot = allocClock % nStreams;
-            allocClock++;
-        }
-        // Issue d prefetches: lines at address+1*block .. address+d*block.
-        for( int i = 1; i <= depth; i++ ) {
-            nextLevel->addressRequest(aligned + (unsigned long)i * blockSz);
-        }
-        streams[slot].valid = true;
-        streams[slot].head  = aligned + blockSz;
-    }
-
-    UINT64 getHits()     const { return hits; }
-    UINT64 getRequests() const { return requests; }
-    int    getDepth()    const { return depth; }
-    int    getNStreams()  const { return nStreams; }
+    UINT64 getHits()    { return hits; }
+    UINT64 getRequests(){ return requests; }
+    int    getDepth()   { return depth; }
+    int    getNStreams() { return nStreams; }
 
 private:
-    struct Stream { bool valid; unsigned long head; };
+    struct Stream {
+        bool          valid;
+        unsigned long head;   // block-aligned address of the first FIFO entry
+    };
 
+    // Round an address down to its cache-block boundary.
     unsigned long align(unsigned long address) const {
         return address & ~((unsigned long)(blockSz - 1));
     }
@@ -233,8 +184,10 @@ private:
     int    depth;
     int    nStreams;
     cache *nextLevel;
+    
     Stream *streams;
-    int    allocClock;
+    int    allocClock;   // round-robin index used when all slots are valid
+
     UINT64 hits;
     UINT64 requests;
 };
@@ -277,7 +230,7 @@ l1icache*   icache;
 l1dcache*   dcache;
 l2cache*    llcache;
 memory*     mem;
-stream_buf*   sbuf;
+stream_buf*  sbuf;
 
 // Keep track if instruction counts so we know when to end simmulation
 UINT64 icount;
@@ -286,9 +239,81 @@ void PrintResults(void);
 
 
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// stream_buf implementation
+stream_buf::stream_buf(int blockSize, int depth, int numStreams, cache *nextLevel)
+    : blockSz(blockSize), depth(depth), nStreams(numStreams),
+      nextLevel(nextLevel), allocClock(0), hits(0), requests(0)
+{
+    streams = new Stream[numStreams];
+    for( int i = 0; i < numStreams; i++ ) {
+        streams[i].valid = false;
+        streams[i].head  = 0;
+    }
+}
 
+stream_buf::~stream_buf()
+{
+    delete[] streams;
+}
 
+bool stream_buf::access(unsigned long address)
+{
+    requests++;
+    unsigned long blockAddr = align(address);
 
+    for( int i = 0; i < nStreams; i++ ) {
+        if( !streams[i].valid || streams[i].head != blockAddr )
+            continue;
+
+        // Stream-buffer hit.  The consumed head line moves to L1D.
+        // The entry one slot beyond the current tail must be prefetched to
+        // keep the buffer full (Jouppi §3: "the buffer fills from behind").
+        hits++;
+        unsigned long newTailAddr = streams[i].head + (unsigned long)depth * blockSz;
+
+        // Advance the FIFO head (pop the consumed block).
+        streams[i].head += blockSz;
+
+        // Fetch the new tail line from the next cache level.
+        if( nextLevel != nullptr )
+            nextLevel->addressRequest(newTailAddr);
+
+        return true;
+    }
+    return false;
+}
+
+void stream_buf::allocate_stream(unsigned long address)
+{
+    unsigned long blockAddr = align(address);
+    unsigned long startAddr = blockAddr + blockSz;   // first line to prefetch
+
+    // Prefer an unused slot; otherwise evict via round-robin.
+    int idx = -1;
+    for( int i = 0; i < nStreams; i++ ) {
+        if( !streams[i].valid ) {
+            idx = i;
+            break;
+        }
+    }
+    if( idx == -1 ) {
+        idx = allocClock;
+        allocClock = (allocClock + 1) % nStreams;
+    }
+
+    // Issue `depth` prefetch requests to fill the new stream.
+    if( nextLevel != nullptr ) {
+        for( int i = 0; i < depth; i++ )
+            nextLevel->addressRequest(startAddr + (unsigned long)i * blockSz);
+    }
+
+    streams[idx].valid = true;
+    streams[idx].head  = startAddr;
+}
+////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -323,23 +348,21 @@ cache::cache( int blockSize, int totalCacheSize, int associativity, cache* nextL
 
 void l1dcache::addressRequest( unsigned long address )
 {
-    // Translate the requested byte address into tag and set fields.
     unsigned long tagField = getTag( address );
     unsigned long setField = getSet( address );
     int index = isHit( tagField, setField );
 
-    // Every access counts as an L1D request, even if it ultimately hits.
     addRequest();
 
     if( index != -1 ) {
-        // L1D hit: update the replacement metadata and stop.
         addHit();
         updateLRU( setField, index );
         return;
     }
 
-    // L1D miss: probe the stream buffer before falling through to L2.
     addTotalMiss();
+
+    int indexLRU = getLRU( setField );
 
     bool streamHit = false;
     if( streamLevel != nullptr ) {
@@ -347,7 +370,6 @@ void l1dcache::addressRequest( unsigned long address )
     }
 
     if( !streamHit ) {
-        // Stream buffer missed: fetch from L2 and allocate a new stream.
         assert( nextLevel != nullptr );
         nextLevel->addressRequest( address );
 
@@ -356,8 +378,6 @@ void l1dcache::addressRequest( unsigned long address )
         }
     }
 
-    // Fill the L1D slot with the requested line and mark it as MRU.
-    int indexLRU = getLRU( setField );
     cacheMem[ indexLRU + setField * assoc ].Tag = tagField;
     cacheMem[ indexLRU + setField * assoc ].Valid = true;
     updateLRU( setField, indexLRU );
@@ -654,8 +674,6 @@ void CreateCaches(void)
     sbuf = nullptr;
 
     // Parse the configuration file and create the cache hierarchy.
-    // The third config line may optionally include a fourth value that
-    // specifies the number of victim-cache entries to allocate for L1D.
     int i = 0;
     while (!config.eof()){
         string line;
@@ -676,11 +694,11 @@ void CreateCaches(void)
                 icache = new l1icache(bsize, csize, assoc, llcache);
                 break;
             case 2:
-                sdepth   = 0;
-                sstreams = 1;
+                sdepth = 0; sstreams = 1;
                 parser >> bsize >> csize >> assoc;
-                if( !(parser >> sdepth)  ) { sdepth = 0; }
-                if( !(parser >> sstreams)) { sstreams = 1; }
+                if( !(parser >> sdepth)  ) sdepth  = 0;
+                if( !(parser >> sstreams)) sstreams = 1;
+
                 if( sdepth > 0 ) {
                     sbuf = new stream_buf(bsize, sdepth, sstreams, llcache);
                 }
@@ -736,6 +754,11 @@ void PrintResults(void)
         << "\t\tDcache ways                 : " << dcache->getCacheAssoc() << endl
         << "\t\tDcache block size (bytes)   : " << dcache->getCacheBlockSize() << endl;
 
+    if( sbuf != nullptr ) {
+        out << "\t\tStream buf depth            : " << sbuf->getDepth() << endl;
+        out << "\t\tStream buf streams          : " << sbuf->getNStreams() << endl;
+    }
+
     out << endl
         << "\t\tIcache size (bytes)         : " << icache->getCacheSize() << endl
         << "\t\tIcache ways                 : " << icache->getCacheAssoc() << endl
@@ -753,8 +776,9 @@ void PrintResults(void)
     out << "\t\t D-Cache Miss: " << dcache->getTotalMiss() << " out of " << dcache->getRequest() << endl;
 
     if( sbuf != nullptr ) {
-        out << "\t\t Stream-Buffer Hits: " << sbuf->getHits() << " out of " << sbuf->getRequests()
-            << "  (depth=" << sbuf->getDepth() << " streams=" << sbuf->getNStreams() << ")" << endl;
+        // Stream-buffer hits rescued sequential misses before reaching L2.
+        // Effective L1D misses = L1D misses - stream-buffer hits.
+        out << "\t\t Stream-Buffer Hits: " << sbuf->getHits() << " out of " << sbuf->getRequests() << endl;
     }
 
     out << "\t\t L2-Cache Miss: " << llcache->getTotalMiss() << " out of " << llcache->getRequest() << endl;

@@ -3,8 +3,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DEFAULT_PIN_TOOL="$REPO_ROOT/pintool/obj-intel64/adaptive_stream_buffer_pintool.so"
+ALI_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$ALI_DIR/.." && pwd)"
+DEFAULT_PIN_TOOL="$ALI_DIR/pintool/obj-intel64/adaptive_stream_buffer_pintool.so"
 DEFAULT_BENCHMARK_ROOT="$REPO_ROOT/benchmarks"
 
 usage() {

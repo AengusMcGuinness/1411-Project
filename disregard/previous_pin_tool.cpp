@@ -115,8 +115,21 @@ public:
     }
 };
 
+class victim_cache;
 
-class stream_buf;
+class victim_cache : public cache {
+public:
+    victim_cache(int blockSize, int totalCacheSize, cache *nextLevel);
+
+    bool access(unsigned long address, unsigned long replacementAddress, bool replacementValid);
+    void insert(unsigned long address);
+
+private:
+    int firstInvalidEntry();
+    unsigned long lineAddress(int entryIndex);
+    void removeEntry(int entryIndex);
+
+};
 
 class l1icache : public cache {
 public:
@@ -127,20 +140,15 @@ public:
 
 class l1dcache : public cache {
 public:
-    // An optional stream buffer is probed on every L1D miss before falling
-    // through to L2.
-    l1dcache( int blockSize, int totalCacheSize, int associativity, cache *nextLevel,
-              stream_buf *streamLevel) :
+    l1dcache( int blockSize, int totalCacheSize, int associativity, cache *nextLevel, victim_cache *victimLevel) :
         cache( blockSize, totalCacheSize, associativity, nextLevel, true),
-        streamLevel(streamLevel)
+        victimLevel(victimLevel)
     { }
 
-    // Extend the normal cache miss path so L1D consults the stream buffer
-    // before falling through to L2.
     void addressRequest( unsigned long address);
 
 private:
-    stream_buf   *streamLevel;
+    victim_cache *victimLevel;
 };
 
 class l2cache : public cache {
@@ -148,95 +156,6 @@ public:
     l2cache(int blockSize, int totalCacheSize, int associativity, cache *nextLevel) :
         cache( blockSize, totalCacheSize, associativity, nextLevel, true)
     { }
-};
-
-// ---------------------------------------------------------------------------
-// Stream buffer (Jouppi 1990, Section 3)
-//
-// Maintains S independent sequential FIFOs of depth d.  Each stream is
-// represented compactly by a single head address; the remaining d-1 lines
-// are implicitly the contiguous blocks that follow it.
-// ---------------------------------------------------------------------------
-class stream_buf {
-public:
-    stream_buf(int blockSize, int depth, int numStreams, cache *nextLevel)
-        : blockSz(blockSize), depth(depth), nStreams(numStreams),
-          nextLevel(nextLevel), allocClock(0), hits(0), requests(0)
-    {
-        streams = new Stream[nStreams];
-        for( int i = 0; i < nStreams; i++ ) {
-            streams[i].valid = false;
-            streams[i].head  = 0;
-        }
-    }
-
-    ~stream_buf() { delete[] streams; }
-
-    // Probe the stream buffer for address.  Returns true on a hit.
-    // On a hit: advance the head and issue one prefetch to keep the buffer full.
-    bool access(unsigned long address)
-    {
-        requests++;
-        unsigned long aligned = align(address);
-        for( int i = 0; i < nStreams; i++ ) {
-            if( streams[i].valid && streams[i].head == aligned ) {
-                hits++;
-                // New tail address that must be fetched to keep depth lines buffered.
-                unsigned long newTail = aligned + (unsigned long)depth * blockSz;
-                // Advance the FIFO head by one block.
-                streams[i].head = aligned + blockSz;
-                // Prefetch the new tail into L2.
-                nextLevel->addressRequest(newTail);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Allocate a new stream starting just after `address`.
-    // Selects an invalid slot first; otherwise uses round-robin.
-    // Issues d prefetch requests to L2 for the d lines following address.
-    void allocate_stream(unsigned long address)
-    {
-        unsigned long aligned = align(address);
-        // Find a free slot.
-        int slot = -1;
-        for( int i = 0; i < nStreams; i++ ) {
-            if( !streams[i].valid ) { slot = i; break; }
-        }
-        if( slot == -1 ) {
-            // All slots occupied: round-robin eviction.
-            slot = allocClock % nStreams;
-            allocClock++;
-        }
-        // Issue d prefetches: lines at address+1*block .. address+d*block.
-        for( int i = 1; i <= depth; i++ ) {
-            nextLevel->addressRequest(aligned + (unsigned long)i * blockSz);
-        }
-        streams[slot].valid = true;
-        streams[slot].head  = aligned + blockSz;
-    }
-
-    UINT64 getHits()     const { return hits; }
-    UINT64 getRequests() const { return requests; }
-    int    getDepth()    const { return depth; }
-    int    getNStreams()  const { return nStreams; }
-
-private:
-    struct Stream { bool valid; unsigned long head; };
-
-    unsigned long align(unsigned long address) const {
-        return address & ~((unsigned long)(blockSz - 1));
-    }
-
-    int    blockSz;
-    int    depth;
-    int    nStreams;
-    cache *nextLevel;
-    Stream *streams;
-    int    allocClock;
-    UINT64 hits;
-    UINT64 requests;
 };
 
 
@@ -273,11 +192,11 @@ KNOB<UINT64> KnobInstructionCount(KNOB_MODE_WRITEONCE, "pintool",
 
 // Globals for the various caches
 /* ===================================================================== */
-l1icache*   icache;
-l1dcache*   dcache;
-l2cache*    llcache;
-memory*     mem;
-stream_buf*   sbuf;
+l1icache* icache;
+l1dcache* dcache;
+l2cache* llcache;
+memory* mem;
+victim_cache* vcache;
 
 // Keep track if instruction counts so we know when to end simmulation
 UINT64 icount;
@@ -286,8 +205,92 @@ void PrintResults(void);
 
 
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// TODO: you will need to implement functions which will be called for the victim cache!
+victim_cache::victim_cache( int blockSize, int totalCacheSize, cache *nextLevel) :
+    cache( blockSize, totalCacheSize, totalCacheSize / blockSize, nextLevel, true)
+    { }
 
+int victim_cache::firstInvalidEntry()
+{
+    for( int i = 0; i < assoc; i++ ) {
+        if( cacheMem[i].Valid == false ) {
+            return i;
+        }
+    }
+    return -1;
+}
 
+unsigned long victim_cache::lineAddress(int entryIndex)
+{
+    return ((unsigned long) cacheMem[entryIndex].Tag) << getBlockOffsetSize();
+}
+
+void victim_cache::removeEntry(int entryIndex)
+{
+    int removedLRU = cacheMem[entryIndex].LRU_status;
+
+    for( int i = 0; i < assoc; i++ ) {
+        if( i == entryIndex ) {
+            continue;
+        }
+        if( cacheMem[i].Valid && cacheMem[i].LRU_status > removedLRU ) {
+            cacheMem[i].LRU_status--;
+        }
+    }
+
+    cacheMem[entryIndex].Valid = false;
+    cacheMem[entryIndex].Tag = 0;
+    cacheMem[entryIndex].LRU_status = assoc - 1;
+}
+
+bool victim_cache::access(unsigned long address, unsigned long replacementAddress, bool replacementValid)
+{
+    addRequest();
+
+    int hitIndex = isHit( getTag(address), 0 );
+    if( hitIndex == -1 ) {
+        addTotalMiss();
+        return false;
+    }
+
+    addHit();
+
+    if( replacementValid ) {
+        cacheMem[hitIndex].Tag = getTag(replacementAddress);
+        cacheMem[hitIndex].Valid = true;
+        updateLRU( 0, hitIndex );
+    } else {
+        removeEntry( hitIndex );
+    }
+
+    return true;
+}
+
+void victim_cache::insert(unsigned long address)
+{
+    int index = firstInvalidEntry();
+    if( index == -1 ) {
+        index = getLRU( 0 );
+    }
+
+    if( cacheMem[index].Valid ) {
+        unsigned long evictedAddress = lineAddress( index );
+        addEntryRemoved();
+        if( nextLevel != nullptr ) {
+            nextLevel->addressRequest( evictedAddress );
+        }
+    }
+
+    cacheMem[index].Tag = getTag( address );
+    cacheMem[index].Valid = true;
+    updateLRU( 0, index );
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -323,41 +326,44 @@ cache::cache( int blockSize, int totalCacheSize, int associativity, cache* nextL
 
 void l1dcache::addressRequest( unsigned long address )
 {
-    // Translate the requested byte address into tag and set fields.
     unsigned long tagField = getTag( address );
     unsigned long setField = getSet( address );
     int index = isHit( tagField, setField );
 
-    // Every access counts as an L1D request, even if it ultimately hits.
     addRequest();
 
     if( index != -1 ) {
-        // L1D hit: update the replacement metadata and stop.
         addHit();
         updateLRU( setField, index );
         return;
     }
 
-    // L1D miss: probe the stream buffer before falling through to L2.
     addTotalMiss();
 
-    bool streamHit = false;
-    if( streamLevel != nullptr ) {
-        streamHit = streamLevel->access( address );
+    int indexLRU = getLRU( setField );
+    bool hasVictim = cacheMem[ indexLRU + setField * assoc ].Valid == true;
+    unsigned long evictedAddress = 0;
+
+    if( hasVictim ) {
+        unsigned long evictedTag = cacheMem[ indexLRU + setField * assoc ].Tag;
+        evictedAddress = evictedTag;
+        evictedAddress = evictedAddress << ( getSetSize() + getBlockOffsetSize() );
+        evictedAddress |= ( (unsigned long) setField << getBlockOffsetSize() );
     }
 
-    if( !streamHit ) {
-        // Stream buffer missed: fetch from L2 and allocate a new stream.
+    bool victimHit = false;
+    if( victimLevel != nullptr ) {
+        victimHit = victimLevel->access( address, evictedAddress, hasVictim );
+    }
+
+    if( !victimHit ) {
         assert( nextLevel != nullptr );
         nextLevel->addressRequest( address );
-
-        if( streamLevel != nullptr ) {
-            streamLevel->allocate_stream( address );
+        if( victimLevel != nullptr && hasVictim ) {
+            victimLevel->insert( evictedAddress );
         }
     }
 
-    // Fill the L1D slot with the requested line and mark it as MRU.
-    int indexLRU = getLRU( setField );
     cacheMem[ indexLRU + setField * assoc ].Tag = tagField;
     cacheMem[ indexLRU + setField * assoc ].Valid = true;
     updateLRU( setField, indexLRU );
@@ -650,12 +656,10 @@ void CreateCaches(void)
     }
 
     // Create the one and only memory
-    mem  = new memory();
-    sbuf = nullptr;
+    mem = new memory();
+    vcache = nullptr;
 
-    // Parse the configuration file and create the cache hierarchy.
-    // The third config line may optionally include a fourth value that
-    // specifies the number of victim-cache entries to allocate for L1D.
+    // Parse config file and create the three caches
     int i = 0;
     while (!config.eof()){
         string line;
@@ -665,7 +669,7 @@ void CreateCaches(void)
         }
         replace( line.begin(), line.end(), ',', ' ' );
         istringstream parser(line);
-        int bsize, csize, assoc, sdepth, sstreams;
+        int bsize, csize, assoc, vsize;
         switch(i){
             case 0:
                 parser >> bsize >> csize >> assoc;
@@ -676,15 +680,15 @@ void CreateCaches(void)
                 icache = new l1icache(bsize, csize, assoc, llcache);
                 break;
             case 2:
-                sdepth   = 0;
-                sstreams = 1;
+                vsize = 0;
                 parser >> bsize >> csize >> assoc;
-                if( !(parser >> sdepth)  ) { sdepth = 0; }
-                if( !(parser >> sstreams)) { sstreams = 1; }
-                if( sdepth > 0 ) {
-                    sbuf = new stream_buf(bsize, sdepth, sstreams, llcache);
+                if( !(parser >> vsize) ) {
+                    vsize = 0;
                 }
-                dcache = new l1dcache(bsize, csize, assoc, llcache, sbuf);
+                if( vsize > 0 ) {
+                    vcache = new victim_cache(bsize, bsize * vsize, llcache);
+                }
+                dcache = new l1dcache(bsize, csize, assoc, llcache, vcache);
                 break;
             default:
                 break;
@@ -736,6 +740,10 @@ void PrintResults(void)
         << "\t\tDcache ways                 : " << dcache->getCacheAssoc() << endl
         << "\t\tDcache block size (bytes)   : " << dcache->getCacheBlockSize() << endl;
 
+    if( vcache != nullptr ) {
+        out << "\t\tVictim cache entries        : " << vcache->getCacheAssoc() << endl;
+    }
+
     out << endl
         << "\t\tIcache size (bytes)         : " << icache->getCacheSize() << endl
         << "\t\tIcache ways                 : " << icache->getCacheAssoc() << endl
@@ -752,9 +760,8 @@ void PrintResults(void)
 
     out << "\t\t D-Cache Miss: " << dcache->getTotalMiss() << " out of " << dcache->getRequest() << endl;
 
-    if( sbuf != nullptr ) {
-        out << "\t\t Stream-Buffer Hits: " << sbuf->getHits() << " out of " << sbuf->getRequests()
-            << "  (depth=" << sbuf->getDepth() << " streams=" << sbuf->getNStreams() << ")" << endl;
+    if( vcache != nullptr ) {
+        out << "\t\t Victim-Cache Hits: " << vcache->getHit() << " out of " << vcache->getRequest() << endl;
     }
 
     out << "\t\t L2-Cache Miss: " << llcache->getTotalMiss() << " out of " << llcache->getRequest() << endl;
